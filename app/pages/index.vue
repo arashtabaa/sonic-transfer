@@ -1,31 +1,21 @@
 <script lang="ts" setup>
 import { appendFileHeaderMetaToBuffer } from 'luby-transform'
+import { ModemProfileKey } from '~/acoustic'
 
 enum ReadPhase {
   Idle,
   Reading,
-  Chunking,
   Ready,
 }
 
 const error = ref<any>()
-const fps = ref(20)
-const sliceSize = ref(1000)
-const throttledFps = useDebounce(fps, 500)
+const sliceSize = useLocalStorage<number>('sonic-slice-size', 200)
+const selectedProfile = useLocalStorage<ModemProfileKey>('sonic-profile', ModemProfileKey.BALANCED)
 const readPhase = ref<ReadPhase>(ReadPhase.Idle)
 
 const filename = ref<string | undefined>()
 const contentType = ref<string | undefined>()
 const data = ref<Uint8Array | null>(null)
-
-const route = useRoute()
-const router = useRouter()
-
-onMounted(() => {
-  if (route.hash.length > 1) {
-    router.replace('/scan')
-  }
-})
 
 async function onFileChange(file?: File) {
   if (!file) {
@@ -38,7 +28,7 @@ async function onFileChange(file?: File) {
     readPhase.value = ReadPhase.Reading
 
     filename.value = file.name
-    contentType.value = file.type
+    contentType.value = file.type || 'application/octet-stream'
 
     const buffer = await file.arrayBuffer()
     data.value = appendFileHeaderMetaToBuffer(new Uint8Array(buffer), {
@@ -54,87 +44,57 @@ async function onFileChange(file?: File) {
     data.value = null
   }
 }
-
-const config = useRuntimeConfig()
-
-const isPrefixed = ref(true)
-const prefix = computed(() => {
-  if (!isPrefixed.value) {
-    return ''
-  }
-  if (config.public.qrcodePrefix) {
-    return `${config.public.qrcodePrefix}#`
-  }
-  return `${location.href}${location.pathname}#`
-})
 </script>
 
 <template>
-  <div px="4" flex="~ col-reverse sm:col" h-full w-full gap-4 pb-8 pt-2>
-    <div grid="~ cols-1 sm:cols-3 wrap" gap="6 sm:(x-5 y-3)">
-      <InputFile border="~ gray/25" shadow="~ gray/25" @file="onFileChange">
-        <div text="neutral-600 dark:neutral-400" min-w-46 flex justify-center px-4 py-2>
-          <div i-carbon:document-add text-lg />
-          <p font-semi-bold pl-2 text-nowrap>
-            <span>Change File</span>
-          </p>
-        </div>
-      </InputFile>
-      <div w-full inline-flex flex-1 flex-row items-center sm:col-span-2>
-        <span min-w-32>
-          <span pr-2 text-neutral-400>Slice Size</span>
-        </span>
-        <input
-          v-model.lazy="sliceSize"
-          type="number"
-          :min="1"
-          :max="2000"
-          border="~ gray/25 rounded-lg"
-          w-full flex-1 bg-transparent px2 py1 text-sm shadow-sm
-        >
+  <div flex="~ col" h-full w-full gap-6 py-2>
+    <!-- File Input Dropzone -->
+    <div v-if="readPhase === ReadPhase.Idle" flex flex-col gap-4>
+      <!-- Quick Test Banner -->
+      <div class="rounded-xl border border-blue-500/30 bg-blue-950/20 p-4 text-xs">
+        <h3 class="font-bold text-blue-400 mb-1 flex items-center gap-1.5">
+          <span class="i-carbon-information text-sm" />
+          Quick Test Guide (2 Devices)
+        </h3>
+        <ol class="list-decimal list-inside space-y-1 text-neutral-300">
+          <li>Open this website on two devices (e.g. Laptop & Phone).</li>
+          <li>On Device A, select a small file (1 KB – 10 KB recommended for initial test).</li>
+          <li>Use <strong>Robust</strong> or <strong>Balanced</strong> mode.</li>
+          <li>On Device B, open <strong>Receive</strong> and grant microphone access.</li>
+          <li>Place devices near each other and click <strong>Start Transmission</strong>.</li>
+        </ol>
       </div>
-      <div>
-        <label inline-flex flex-row select-none items-center>
-          <span min-w-32>
-            <span text-neutral-400>Scanner URL</span>
-          </span>
-          <InputCheckbox v-model="isPrefixed" />
-        </label>
-      </div>
-      <div w-full inline-flex flex-1 flex-row items-center sm:col-span-2>
-        <span min-w-32>
-          <span pr-2 text-neutral-400>Ideal FPS</span>
-          <span font-mono>{{ throttledFps.toFixed(0) }}hz</span>
-        </span>
-        <InputSlide
-          v-model="throttledFps"
-          :min="1"
-          :max="60"
-          smooth
-          w-full flex-1
-        />
-      </div>
+
+      <InputFile
+        text="neutral-400"
+        aspect-1 sm:aspect-auto sm:h-64 h-full w-full rounded-xl border="2 dashed neutral-800 hover:blue-500/50" transition-colors
+        @file="onFileChange"
+      />
+      <DropZone text="Drop file here to send via sound" @file="onFileChange" />
     </div>
-    <div
-      v-if="readPhase === ReadPhase.Ready && data"
-      h-full w-full flex justify-center
-    >
-      <Generate
-        :max-scans-per-second="throttledFps"
-        :slice-size="sliceSize"
+
+    <!-- Acoustic Transmitter Component -->
+    <div v-else-if="readPhase === ReadPhase.Ready && data" flex flex-col gap-6>
+      <div flex justify-between items-center border-b border-neutral-800 pb-3>
+        <div>
+          <h2 text-lg font-bold text-neutral-100>Acoustic File Transmitter</h2>
+          <p text-xs text-neutral-400>Converting file into sound data stream</p>
+        </div>
+        <InputFile border="~ neutral-700" shadow="~" @file="onFileChange">
+          <div text-xs text-neutral-300 flex items-center gap-1.5 px-3 py-1.5 font-semibold>
+            <span i-carbon:document-add text-sm />
+            Change File
+          </div>
+        </InputFile>
+      </div>
+
+      <AcousticSend
         :data="data"
         :filename="filename"
         :content-type="contentType"
-        :prefix="prefix"
-        w-full
+        :slice-size="sliceSize"
+        :profile-key="selectedProfile"
       />
     </div>
-    <InputFile
-      v-else
-      text="neutral-600 dark:neutral-400"
-      aspect-1 h-full w-full rounded-lg
-      @file="onFileChange"
-    />
-    <DropZone text="Drop File Here" @file="onFileChange" />
   </div>
 </template>

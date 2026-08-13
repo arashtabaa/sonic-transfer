@@ -21,7 +21,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      qrcodePrefix: '',
+      appVersion: '1.0.0',
     },
   },
 

@@ -1,67 +1,40 @@
 <template>
   <div max-w="full sm:250" mx-auto w-full flex flex-col pb-30>
     <header flex flex-col gap-4 px-4 pb-4 pt-4>
-      <nav flex items-center>
-        <div w-40 flex="~" items-center gap-2 text-4xl>
-          <img src="/logo.svg" alt="Qrs" size-1em>
-          <h1>
-            Qrs
-          </h1>
-        </div>
-        <!-- Header -->
-        <div
-          class="hidden sm:flex"
-          flex-1 justify-center gap-8
-          text-lg
-        >
-          <NuxtLink op70 hover="text-blue" duration-300 transition="all ease-in-out" to="/" active-class="!op100" flex="~ items-center gap-1">
-            <span i-carbon-upload inline-block />
-            Send
-          </NuxtLink>
-          <NuxtLink op70 hover="text-blue" duration-300 transition="all ease-in-out" to="/scan" active-class="!op100" flex="~ items-center gap-1">
-            <span i-carbon-download inline-block />
-            Receive
-          </NuxtLink>
-        </div>
-        <div w-40 flex="~ <sm:1" justify-end text-2xl>
-          <a href="https://github.com/qqrss/qrs" target="_blank" op70 hover="text-blue" duration-300 transition="all ease-in-out" flex="~ items-center gap-1">
-            <span i-carbon:logo-github inline-block />
-          </a>
-        </div>
+      <nav flex items-center justify-between border-b border-neutral-800 pb-4>
+        <!-- Brand Title -->
+        <NuxtLink to="/" flex items-center gap-3 text-xl font-bold tracking-tight text-neutral-100 hover:text-blue-400 transition>
+          <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
+            <span i-carbon-audio-console inline-block text-xl />
+          </div>
+          <div flex flex-col>
+            <span leading-none>Sonic Transfer</span>
+            <span text-10px font-normal text-neutral-400 leading-tight mt-0.5>Direct file transfer through sound</span>
+          </div>
+        </NuxtLink>
 
-        <!-- Deck -->
-        <div
-          class="flex sm:hidden"
-          bottom="75px" left="50%" translate-x="-50%"
-          bg="neutral-100 dark:neutral-900"
-          fixed z-100 flex-1 justify-center gap-2 rounded-full p-2 text-sm
-        >
-          <NuxtLink
-            to="/"
-            active-class="!op100 bg-neutral-700 dark:bg-neutral-300 !text-neutral-100 !dark:text-neutral-900"
-            rounded-full px-3 py-1
-            op70 hover="text-blue"
-            flex="~ items-center gap-1"
-            transition="all ease-in-out" duration-300
-          >
-            <span i-carbon-upload inline-block />
+        <!-- Navigation Links -->
+        <div hidden sm:flex items-center gap-6 text-sm font-semibold>
+          <NuxtLink op70 hover="text-blue-400" duration-200 transition="all" to="/" active-class="!op100 text-blue-400" flex="~ items-center gap-1.5">
+            <span i-carbon-send-alt inline-block />
             Send
           </NuxtLink>
-          <NuxtLink
-            to="/scan"
-            active-class="!op100 bg-neutral-700 dark:bg-neutral-300 !text-neutral-100 !dark:text-neutral-900"
-            rounded-full px-3 py-1
-            op70 hover="text-blue"
-            flex="~ items-center gap-1"
-            transition="all ease-in-out" duration-300
-          >
-            <span i-carbon-download inline-block />
+          <NuxtLink op70 hover="text-blue-400" duration-200 transition="all" to="/receive" active-class="!op100 text-blue-400" flex="~ items-center gap-1.5">
+            <span i-carbon-microphone inline-block />
             Receive
+          </NuxtLink>
+          <NuxtLink op70 hover="text-blue-400" duration-200 transition="all" to="/diagnostics" active-class="!op100 text-blue-400" flex="~ items-center gap-1.5">
+            <span i-carbon-meter inline-block />
+            Diagnostics
+          </NuxtLink>
+          <NuxtLink op70 hover="text-blue-400" duration-200 transition="all" to="/settings" active-class="!op100 text-blue-400" flex="~ items-center gap-1.5">
+            <span i-carbon-settings inline-block />
+            Settings
           </NuxtLink>
         </div>
       </nav>
     </header>
-    <main h-full w-full flex-1>
+    <main h-full w-full flex-1 px-4>
       <slot />
     </main>
   </div>
