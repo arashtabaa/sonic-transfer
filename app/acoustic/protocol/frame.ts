@@ -87,6 +87,29 @@ export function decodeTestFileComplete(bytes: Uint8Array): TestFileCompletePaylo
   }
 }
 
+/**
+ * Reusable validation function for TEST_FILE_COMPLETE frames (Requirement 2).
+ * Validates outer frame CRC32, outer session ID, payload session ID, payload testTransferId, expected SHA-256, actual SHA-256, and pass === true.
+ */
+export function validateTestFileCompleteFrame(
+  frame: AcousticFrame | null,
+  payload: TestFileCompletePayload | null,
+  activeTestSessionId: number,
+  activeTestTransferId: number,
+  expectedSha256Constant: string,
+): boolean {
+  if (!frame || !payload) return false
+  if (frame.frameType !== AcousticFrameType.TEST_FILE_COMPLETE) return false
+  if (frame.sessionId !== activeTestSessionId) return false
+  if (payload.protocolVersion !== 1) return false
+  if (payload.sessionId !== activeTestSessionId) return false
+  if (payload.testTransferId !== activeTestTransferId) return false
+  if (payload.expectedSha256 !== expectedSha256Constant) return false
+  if (payload.actualSha256 !== expectedSha256Constant) return false
+  if (payload.pass !== true) return false
+  return true
+}
+
 export const PREAMBLE_BYTES = new Uint8Array([0x53, 0x4F, 0x4E, 0x49]) // "SONI"
 export const PROTOCOL_VERSION = 1
 export const FRAME_HEADER_SIZE = 4 + 1 + 4 + 1 + 4 + 2 // Preamble (4) + Ver(1) + SessionID(4) + Type(1) + Seq(4) + Len(2)

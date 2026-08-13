@@ -13,7 +13,7 @@ function sha256(data: Uint8Array): string {
 }
 
 describe('Final Acoustic Round-Trip Verification Test', () => {
-  it('BFSK Modem synthetic acoustic round-trip over random binary data', () => {
+  it('BFSK Modem synthetic acoustic round-trip over random binary data', async () => {
     const sampleRate = 48000
     const testType = 'synthetic (software loopback)'
 
@@ -22,8 +22,10 @@ describe('Final Acoustic Round-Trip Verification Test', () => {
     const originalBytes = new Uint8Array(randomBuffer.buffer, randomBuffer.byteOffset, randomBuffer.byteLength)
     const originalHash = sha256(originalBytes)
 
-    // Fountain encode
-    const encoder = createEncoder(originalBytes, 128, true)
+    // Fountain encode with canonical header metadata
+    const { appendFileHeaderMetaToBuffer, readFileHeaderMetaFromBuffer } = await import('../packages/luby-transform/src')
+    const canonicalPayload = appendFileHeaderMetaToBuffer(originalBytes, { filename: 'test.bin', contentType: 'application/octet-stream' })
+    const encoder = createEncoder(canonicalPayload, 128, true)
     const fountainGen = encoder.fountain()
 
     // Modem setup
@@ -50,7 +52,9 @@ describe('Final Acoustic Round-Trip Verification Test', () => {
         if (parsed.fountainBlock) {
           const isComplete = decoder.addBlock(parsed.fountainBlock)
           if (isComplete) {
-            reconstructedBytes = decoder.getDecoded()
+            const decodedMerged = decoder.getDecoded()!
+            const [extractedBytes] = readFileHeaderMetaFromBuffer(decodedMerged)
+            reconstructedBytes = extractedBytes
             break
           }
         }

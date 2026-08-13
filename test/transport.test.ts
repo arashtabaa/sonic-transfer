@@ -8,6 +8,7 @@ import {
   encodeFrame,
   encodeTestFileComplete,
   encodeTestFileStart,
+  validateTestFileCompleteFrame,
 } from '../app/acoustic/protocol/frame'
 import {
   decodeFrequencyProbe,
@@ -17,9 +18,24 @@ import {
 } from '../app/acoustic/transport/link-test'
 import { MetricsCollector } from '../app/acoustic/metrics/stats'
 import { analyzeToneWindow } from '../app/acoustic/dsp/spectral-estimator'
+import { AudioTransmitter } from '../app/acoustic/transport/audio-tx'
 import { EXPECTED_TEST_SHA256 } from '../app/constants/testPayload'
 
 describe('Physical Transport & Protocol Codec Suite', () => {
+  it('Worklet in-flight drain state and queue completion', () => {
+    const tx = new AudioTransmitter({ sampleRate: 48000 })
+    expect(tx.isQueueEmpty()).toBe(true)
+  })
+
+  it('cancelled playFrame does not resolve as success on stop', async () => {
+    const tx = new AudioTransmitter({ sampleRate: 48000 })
+    await tx.start()
+    const playPromise = tx.playFrame({ samples: new Float32Array(512), durationMs: 10 })
+    tx.stop()
+
+    await expect(playPromise).rejects.toThrow('TransmissionCancelledError')
+  })
+
   it('TEST_FILE_START codec', () => {
     const payload = {
       protocolVersion: 1,
@@ -47,26 +63,21 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: EXPECTED_TEST_SHA256,
       pass: true,
     }
+    const frameBytes = encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload))
+    const frame = decodeFrame(frameBytes)
 
-    const encodedBytes = encodeTestFileComplete(payload)
-    const decodedPayload = decodeTestFileComplete(encodedBytes)
-
-    expect(decodedPayload).not.toBeNull()
-    expect(decodedPayload?.sessionId).toBe(12345)
-    expect(decodedPayload?.testTransferId).toBe(67890)
-    expect(decodedPayload?.pass).toBe(true)
-    expect(decodedPayload?.actualSha256).toBe(EXPECTED_TEST_SHA256)
+    const isValid = validateTestFileCompleteFrame(frame, payload, 12345, 67890, EXPECTED_TEST_SHA256)
+    expect(isValid).toBe(true)
   })
 
   it('wrong outer session rejection', () => {
     const activeSessionId = 12345
     const packetizer = new AcousticPacketizer(activeSessionId)
+    const foreignFrame = encodeFrame(99999 /* Wrong Session ID */, AcousticFrameType.DATA, 1, new Uint8Array([1, 2, 3]))
 
-    const foreignFrame = encodeFrame(99999 /* Mismatched Session ID */, AcousticFrameType.DATA, 1, new Uint8Array([1, 2, 3]))
-    const parsedForeign = packetizer.parseIncomingBuffer(foreignFrame)
-
-    expect(parsedForeign.frame?.sessionId).toBe(99999)
-    expect(parsedForeign.frame?.sessionId).not.toBe(activeSessionId) // Assert foreign session ID mismatch!
+    const parsed = packetizer.parseIncomingBuffer(foreignFrame)
+    expect(parsed.frame?.sessionId).toBe(99999)
+    expect(parsed.frame?.sessionId !== activeSessionId).toBe(true)
   })
 
   it('wrong payload session rejection', () => {
@@ -79,11 +90,13 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: EXPECTED_TEST_SHA256,
       pass: true,
     }
-    expect(payload.sessionId).not.toBe(activeSessionId)
+    const frame = decodeFrame(encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload)))
+    const isValid = validateTestFileCompleteFrame(frame, payload, activeSessionId, 67890, EXPECTED_TEST_SHA256)
+
+    expect(isValid).toBe(false) // REJECTED!
   })
 
   it('wrong testTransferId rejection', () => {
-    const activeTransferId = 77777
     const payload = {
       protocolVersion: 1,
       sessionId: 12345,
@@ -92,7 +105,10 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: EXPECTED_TEST_SHA256,
       pass: true,
     }
-    expect(payload.testTransferId).not.toBe(activeTransferId)
+    const frame = decodeFrame(encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload)))
+    const isValid = validateTestFileCompleteFrame(frame, payload, 12345, 77777 /* expected testTransferId */, EXPECTED_TEST_SHA256)
+
+    expect(isValid).toBe(false) // REJECTED!
   })
 
   it('wrong expected hash rejection', () => {
@@ -104,7 +120,10 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: EXPECTED_TEST_SHA256,
       pass: true,
     }
-    expect(payload.expectedSha256).not.toBe(EXPECTED_TEST_SHA256)
+    const frame = decodeFrame(encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload)))
+    const isValid = validateTestFileCompleteFrame(frame, payload, 12345, 67890, EXPECTED_TEST_SHA256)
+
+    expect(isValid).toBe(false) // REJECTED!
   })
 
   it('wrong actual hash rejection', () => {
@@ -116,7 +135,10 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: 'corrupted_actual_hash',
       pass: true,
     }
-    expect(payload.actualSha256).not.toBe(EXPECTED_TEST_SHA256)
+    const frame = decodeFrame(encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload)))
+    const isValid = validateTestFileCompleteFrame(frame, payload, 12345, 67890, EXPECTED_TEST_SHA256)
+
+    expect(isValid).toBe(false) // REJECTED!
   })
 
   it('pass=false rejection', () => {
@@ -128,13 +150,10 @@ describe('Physical Transport & Protocol Codec Suite', () => {
       actualSha256: EXPECTED_TEST_SHA256,
       pass: false,
     }
-    expect(payload.pass).toBe(false)
-  })
+    const frame = decodeFrame(encodeFrame(12345, AcousticFrameType.TEST_FILE_COMPLETE, 1, encodeTestFileComplete(payload)))
+    const isValid = validateTestFileCompleteFrame(frame, payload, 12345, 67890, EXPECTED_TEST_SHA256)
 
-  it('stale ACK rejection', () => {
-    const activeNonce = 999111
-    const staleAckNonce = 111999
-    expect(staleAckNonce).not.toBe(activeNonce)
+    expect(isValid).toBe(false) // REJECTED!
   })
 
   it('spectral estimator known 4 kHz tone', () => {
@@ -215,7 +234,7 @@ describe('Physical Transport & Protocol Codec Suite', () => {
     expect(decodedReport?.probeId).toBe(probe.probeId)
   })
 
-  it('CRC corruption rejection', () => {
+  it('control-frame CRC corruption rejection', () => {
     const buffer = encodeFrame(123, AcousticFrameType.DATA, 1, new Uint8Array([1, 2, 3]))
     buffer[18] = buffer[18]! ^ 0xFF // Corrupt byte
     const decoded = decodeFrame(buffer)

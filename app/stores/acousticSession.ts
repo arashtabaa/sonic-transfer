@@ -7,11 +7,14 @@ import {
   AudioTransmitter,
   BFSKAcousticModem,
   decodeTestFileComplete,
+  decodeTestFileStart,
   encodeFrame,
   encodeTestFileComplete,
+  encodeTestFileStart,
   getProfileConfig,
   MetricsCollector,
   ModemProfileKey,
+  validateTestFileCompleteFrame,
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
 } from '~/acoustic'
@@ -90,6 +93,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const transferSessionId = ref<number | null>(null)
   const activeProbeNonce = ref<number | null>(null)
   const activeTestTransferId = ref<number | null>(null)
+
+  // Receiver Learned Test State (Requirement 4 & 6 - NO 888/999 Fallbacks)
+  const incomingTestSessionId = ref<number | null>(null)
+  const incomingTestTransferId = ref<number | null>(null)
+  const incomingExpectedSha256 = ref<string | null>(null)
 
   // --- Live Runtime State (Survives SPA Navigation) ---
   const isTransmitting = ref(false)
@@ -255,12 +263,12 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }, 10000)
   }
 
-  // --- Real Finite DATA Bursts + ACK Control Windows (Requirement 5 & 6) ---
+  // --- Real Finite DATA Bursts + ACK Control Windows (Requirement 1, 4, 5, 6) ---
   async function runTestFileTransfer() {
     sessionStep.value = SessionStep.TEST_TRANSFERRING
     transferPhase.value = TransferPhase.DATA_TX
 
-    // Generate test session ID and testTransferId
+    // Generate test session ID and testTransferId via crypto.getRandomValues()
     transferSessionId.value = generateSecureRandomUint32()
     activeTestTransferId.value = generateSecureRandomUint32()
     packetizer = new AcousticPacketizer(transferSessionId.value)
@@ -272,7 +280,25 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     if (!transmitter) transmitter = new AudioTransmitter()
     await transmitter.start()
 
+    const controlModem = getControlModem(transmitter.getSampleRate())
     const dataModem = getDataModem(transmitter.getSampleRate())
+
+    // Step 1: Transmit TEST_FILE_START over ROBUST control channel (Requirement 1 & 4)
+    const startPayloadBytes = encodeTestFileStart({
+      protocolVersion: 1,
+      sessionId: transferSessionId.value,
+      testTransferId: activeTestTransferId.value,
+      payloadSize: testPayload.length,
+      expectedSha256: EXPECTED_TEST_SHA256,
+    })
+    const startFrame = encodeFrame(transferSessionId.value, AcousticFrameType.TEST_FILE_START, 1, startPayloadBytes)
+    const startAudioFrame = controlModem.encode(startFrame)
+    await transmitter.playFrame(startAudioFrame)
+    await transmitter.waitUntilDrained()
+
+    // 200ms guard interval before starting test DATA bursts
+    await new Promise(r => setTimeout(r, 200))
+
     const { createEncoder } = await import('luby-transform')
     const canonicalPayload = appendFileHeaderMetaToBuffer(testPayload, {
       filename: sendFilename.value,
@@ -281,7 +307,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     const encoder = createEncoder(canonicalPayload, sliceSize.value, true)
     const fountain = encoder.fountain()
 
-    let sequence = 0
+    let sequence = 2
     isTransmitting.value = true
     activePage.value = 'send'
     await requestWakeLock()
@@ -291,6 +317,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       if (!isTransmitting.value || sessionStep.value !== SessionStep.TEST_TRANSFERRING) return
 
       transferPhase.value = TransferPhase.DATA_TX
+      const framePromises: Promise<void>[] = []
+
       for (let i = 0; i < 10; i++) {
         let frameBuffer: Uint8Array
         if (sequence % 10 === 0) {
@@ -313,12 +341,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         }
 
         const audioFrame = dataModem.encode(frameBuffer)
-        transmitter!.enqueueFrame(audioFrame)
+        framePromises.push(transmitter!.playFrame(audioFrame))
         sequence++
       }
 
-      // Requirement 1 & 5: Wait for audio queue drain before half-duplex turnaround
+      // Requirement 3: Track every frame promise and wait for queue drain!
       transferPhase.value = TransferPhase.TX_DRAIN
+      await Promise.all(framePromises)
       await transmitter!.waitUntilDrained()
 
       // Half-duplex turnaround to RX
@@ -482,7 +511,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       return
     }
 
-    // Requirement 4: Reject foreign session packets once locked
+    // Requirement 4: Reject foreign session packets once locked (NO FALLBACK IDs 888/999!)
     if (transferSessionId.value && parsed.frame.sessionId !== transferSessionId.value) {
       console.warn('Rejected foreign session frame', parsed.frame.sessionId)
       return
@@ -491,11 +520,28 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     dspStage.value = 'CRC_VALID'
     metricsCollector.recordPacket(parsed.frame.payload.length, true)
 
+    // Handle TEST_FILE_START: Device B learns incoming test session details! (Requirement 1 & 4)
+    if (parsed.frame.frameType === AcousticFrameType.TEST_FILE_START) {
+      const startPayload = decodeTestFileStart(parsed.frame.payload)
+      if (
+        startPayload &&
+        startPayload.protocolVersion === 1 &&
+        startPayload.payloadSize === 8192 &&
+        startPayload.expectedSha256 === EXPECTED_TEST_SHA256 &&
+        parsed.frame.sessionId === startPayload.sessionId
+      ) {
+        incomingTestSessionId.value = startPayload.sessionId
+        incomingTestTransferId.value = startPayload.testTransferId
+        incomingExpectedSha256.value = startPayload.expectedSha256
+        transferSessionId.value = startPayload.sessionId
+        receiveMode.value = ReceiveMode.TEST_DATA_RECEIVE
+      }
+    }
+
     // Requirement 4 & 5: Handle LINK_PROBE and send LINK_ACK with half-duplex turnaround
     if (parsed.frame.frameType === AcousticFrameType.LINK_PROBE) {
       const probePayload = AcousticLinkTester.parseProbePayload(parsed.frame.payload)
       if (probePayload) {
-        // Half-duplex turnaround: stop RX before transmitting LINK_ACK
         if (receiver) receiver.stop()
 
         setTimeout(async () => {
@@ -534,16 +580,18 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       }
     }
 
-    // Requirement 6: Handle TEST_FILE_COMPLETE ACK validation on Sender
+    // Requirement 2 & 5: Handle TEST_FILE_COMPLETE ACK validation on Sender
     if (parsed.frame.frameType === AcousticFrameType.TEST_FILE_COMPLETE) {
       const payload = decodeTestFileComplete(parsed.frame.payload)
-      if (
-        payload &&
-        payload.protocolVersion === 1 &&
-        payload.pass === true &&
-        payload.expectedSha256 === EXPECTED_TEST_SHA256 &&
-        payload.actualSha256 === EXPECTED_TEST_SHA256
-      ) {
+      const isValid = validateTestFileCompleteFrame(
+        parsed.frame,
+        payload,
+        transferSessionId.value || 0,
+        activeTestTransferId.value || 0,
+        EXPECTED_TEST_SHA256,
+      )
+
+      if (isValid) {
         // SENDER UNLOCKS TEST_TRANSFER_VERIFIED ONLY UPON RECEIVING REAL ACOUSTIC ACK!
         stopTransmission()
         if (receiver) receiver.stop()
@@ -596,29 +644,46 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
             downloadedContentType.value = meta.contentType
             dspStage.value = 'COMPLETE'
 
-            // Requirement 6: Acoustically transmit strongly-validated TEST_FILE_COMPLETE ACK frame back to Sender!
-            if (downloadedFilename.value === 'sonic-test-fixture.bin') {
+            // Requirement 3 & 6: Half-duplex turnaround before transmitting TEST_FILE_COMPLETE ACK back to Sender!
+            if (
+              downloadedFilename.value === 'sonic-test-fixture.bin' &&
+              incomingTestSessionId.value &&
+              incomingTestTransferId.value
+            ) {
               const completeBytes = encodeTestFileComplete({
                 protocolVersion: 1,
-                sessionId: receiveHeader.value?.sessionId || 999,
-                testTransferId: activeTestTransferId.value || 888,
+                sessionId: incomingTestSessionId.value,
+                testTransferId: incomingTestTransferId.value,
                 expectedSha256: EXPECTED_TEST_SHA256,
                 actualSha256: actualHash,
                 pass: true,
               })
               const completeFrame = encodeFrame(
-                receiveHeader.value?.sessionId || 999,
+                incomingTestSessionId.value,
                 AcousticFrameType.TEST_FILE_COMPLETE,
                 1,
                 completeBytes,
               )
-              if (!transmitter) transmitter = new AudioTransmitter()
-              await transmitter.start()
-              const controlModem = getControlModem(transmitter.getSampleRate())
-              const audioFrame = controlModem.encode(completeFrame)
-              await transmitter.playFrame(audioFrame)
-              await transmitter.waitUntilDrained()
-              transmitter.stop()
+
+              // Stop RX before transmitting
+              if (receiver) receiver.stop()
+              receiveMode.value = ReceiveMode.IDLE
+
+              setTimeout(async () => {
+                if (!transmitter) transmitter = new AudioTransmitter()
+                await transmitter.start()
+                const controlModem = getControlModem(transmitter.getSampleRate())
+                const audioFrame = controlModem.encode(completeFrame)
+                await transmitter.playFrame(audioFrame)
+                await transmitter.waitUntilDrained()
+                transmitter.stop()
+
+                setTimeout(async () => {
+                  if (isListening.value && receiver) {
+                    await receiver.start(selectedMicId.value || undefined)
+                  }
+                }, 200)
+              }, 200)
             }
           }
         }

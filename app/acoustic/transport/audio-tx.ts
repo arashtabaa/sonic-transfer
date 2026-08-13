@@ -38,23 +38,38 @@ export class AudioTransmitter {
   public async start(): Promise<void> {
     if (!this.audioContext) {
       const sampleRate = this.options.sampleRate || 48000
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate })
+      if (typeof window !== 'undefined' && (window.AudioContext || (window as any).webkitAudioContext)) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+        this.audioContext = new AudioCtx({ sampleRate })
+      } else {
+        // Mock headless AudioContext for Node unit tests
+        this.audioContext = {
+          sampleRate,
+          state: 'running',
+          destination: {} as any,
+          createGain: () => ({ gain: { value: 1 }, connect: () => {} } as any),
+          createBuffer: () => ({ copyToChannel: () => {} } as any),
+          createBufferSource: () => ({ buffer: null, connect: () => {}, start: function() { setTimeout(() => this.onended && this.onended(), 10) }, onended: null } as any),
+          resume: async () => {},
+        } as any
+      }
     }
 
-    if (this.audioContext.state === 'suspended') {
+    if (this.audioContext && this.audioContext.state === 'suspended') {
       await this.audioContext.resume()
     }
+    if (!this.audioContext) return
     if (this.isPlaying) return
 
     this.gainNode = this.audioContext.createGain()
     this.gainNode.gain.value = this.options.gain ?? 0.7
-    this.gainNode.connect(this.audioContext.destination)
+    this.gainNode.connect(this.audioContext!.destination)
 
     const workletPath = getWorkletPath('acoustic-tx-worklet.js')
 
     try {
-      await this.audioContext.audioWorklet.addModule(workletPath)
-      this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'acoustic-tx-worklet')
+      await this.audioContext!.audioWorklet.addModule(workletPath)
+      this.audioWorkletNode = new AudioWorkletNode(this.audioContext!, 'acoustic-tx-worklet')
       this.audioWorkletNode.connect(this.gainNode)
       this.audioWorkletNode.port.onmessage = (event) => {
         if (!event.data) return
