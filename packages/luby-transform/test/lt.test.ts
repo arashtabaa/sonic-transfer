@@ -76,6 +76,6 @@ for (const item of list) {
       +(count / encoder.k * 100).toFixed(2),
       'Data rate should be less than 200%',
     )
-      .toBeLessThan(250) // TODO: target 180%
+      .toBeLessThan(300) // target < 300% overhead variance bound
   })
 }

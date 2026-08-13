@@ -38,7 +38,7 @@ Sonic Transfer enables two nearby devices (laptops, desktops, smartphones) to tr
 The sender converts binary data into acoustic audio signals played over the speaker. The receiver listens through its microphone, demodulates the acoustic frames, verifies packet integrity via CRC32, reconstructs the file using Fountain codes, and presents the file for download.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
 </p>
 
 ## Quick Test (Two Devices)
@@ -53,7 +53,7 @@ To test file transfer between two devices:
 6. Click **Start Transmission** on Device A.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
 </p>
 
 ## Core Concept & Architecture
@@ -93,7 +93,7 @@ User Blob Download
 ```
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
 </p>
 
 ## Verification Status
@@ -116,7 +116,7 @@ We maintain strict and honest technical claims about the verification state of e
 - **Universal Ultrasonic Support**: Ultrasonic frequency response (>18 kHz) depends on physical speaker/microphone hardware capabilities.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
 </p>
 
 ## Verified Synthetic Benchmark Results
@@ -124,65 +124,25 @@ We maintain strict and honest technical claims about the verification state of e
 The following result is from our automated test suite running a synthetic software loopback round-trip over 1,024 bytes of random binary data:
 
 ```text
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p> SYNTHETIC ACOUSTIC ROUND-TRIP TEST <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p>
+--- SYNTHETIC ACOUSTIC ROUND-TRIP TEST ---
 Test Type:            Synthetic (Software Loopback)
 Modem Implementation: BFSKAcousticModem (MFSK Robust Profile)
 Sample Rate:          48,000 Hz
 Original SHA-256:      3fe708ab3133b3f87ebed89355d010c468d5dc811992c5b4f5ddeb6f239947c4
 Reconstructed SHA-256: 3fe708ab3133b3f87ebed89355d010c468d5dc811992c5b4f5ddeb6f239947c4
 Exact Byte Equality:   PASS (100% Identical)
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p><p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p>
+------------------------------------------
 ```
 *(Note: Synthetic benchmark results do not represent physical over-the-air performance).*
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
 </p>
 
 ## Frequency Profiles
 
 | Profile | Target Use Case | Frequency Band | Status |
-| :<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p> | :<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p> | :<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p> | :<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p> |
+| :--- | :--- | :--- | :--- |
 | **Auto** | Automatic calibration | Measured via probe sweep | Implemented |
 | **Robust** | Maximum compatibility | 1.5 kHz – 3.5 kHz | Implemented |
 | **Balanced** | General use (Default) | 2.0 kHz – 6.0 kHz | Implemented |
@@ -192,7 +152,7 @@ Exact Byte Equality:   PASS (100% Identical)
 | **Custom** | Expert tuning | User-configured | Implemented |
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
 </p>
 
 ## Why Fountain Codes?
@@ -202,7 +162,7 @@ Acoustic audio channels are inherently lossy and subject to ambient noise, refle
 Instead of requiring retransmission of lost packets via network handshakes, Sonic Transfer uses **Luby Transform (Fountain Codes)**. The sender continuously broadcasts random XOR combinations of original file blocks. The receiver collects any valid blocks (in any order) until it has enough data to reconstruct the exact original file.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
 </p>
 
 ## Privacy & Security
@@ -212,7 +172,7 @@ Instead of requiring retransmission of lost packets via network handshakes, Soni
 - **Untrusted Input Handling**: Received files are treated strictly as untrusted binary blobs and are never automatically executed or evaluated.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
 </p>
 
 ## Developer Quick Start
@@ -246,7 +206,7 @@ pnpm generate
 The production static build is generated in `.output/public/`.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
 </p>
 
 ## One-Click Windows Launcher
@@ -258,7 +218,7 @@ For offline local usage on Windows:
 3. The script will automatically build static assets if needed, start a local HTTP server, and open your browser at `http://localhost:3000`.
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
 </p>
 
 ## Documentation
@@ -271,7 +231,7 @@ Detailed architectural and technical specifications are available in the `docs/`
 - [Testing & Benchmarking Guide](docs/testing.md)
 
 <p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
+  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
 </p>
 
 ## Inspiration & Attribution
@@ -281,4 +241,19 @@ Sonic Transfer is derived from and inspired by [qrs](https://github.com/qifi-dev
 Qrs pioneered rateless file streaming over visual animated QR code sequences using Luby Transform fountain codes. Sonic Transfer adapts this transport architecture from the visual optical spectrum to the acoustic audio spectrum while preserving `packages/luby-transform`.
 
 ### License
-Sonic Transfer is open-source software licensed under the [MIT License](LICENSE). Retains original copyright notices for derived Fountain code components.
+Sonic Transfer is open-source software licensed under the [MIT License](LICENSE). Third-party attribution notice available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+---
+
+<p align="center">
+  <img src="docs/assets/dividers/pulse-icon.svg" width="24px" height="24px" alt="Pulse Icon">
+  <br>
+  <strong>Sonic Transfer</strong> — <em>Sound carries the data.</em>
+  <br>
+  Built and maintained by <a href="https://github.com/arashtabaa"><strong>arashtabaa</strong></a>
+  <br>
+  <a href="https://arashtabaa.github.io/sonic-transfer/">Live Demo</a> •
+  <a href="https://github.com/arashtabaa/sonic-transfer">Repository</a> •
+  <a href="https://github.com/arashtabaa/sonic-transfer/issues">Issues</a> •
+  <a href="LICENSE">License</a>
+</p>
