@@ -1,7 +1,5 @@
-import { AcousticPacketizer } from '../framing/packetizer'
-import { BFSKAcousticModem } from '../modulation/bfsk-modem'
-import { getProfileConfig, ModemProfileKey } from '../modulation/modem'
-import { crc32 } from '../protocol/crc32'
+import { AcousticFrameType, encodeFrame } from '../protocol/frame'
+import { ModemProfileKey } from '../modulation/modem'
 
 export interface LinkTestOptions {
   profileKey: ModemProfileKey
@@ -22,15 +20,40 @@ export interface LinkTestResult {
 
 export class AcousticLinkTester {
   /**
-   * Generates a Link Probe payload containing random nonce and timestamp
+   * Generates a Link Probe frame containing a random 32-bit nonce
    */
-  static createProbePayload(sessionId: number, nonce: number): Uint8Array {
+  static createProbeFrame(sessionId: number, nonce: number, sequence = 1): Uint8Array {
     const buffer = new Uint8Array(12)
     const view = new DataView(buffer.buffer)
     view.setUint32(0, sessionId, false)
     view.setUint32(4, nonce, false)
     view.setUint32(8, Date.now() >>> 0, false)
-    return buffer
+    return encodeFrame(sessionId, AcousticFrameType.LINK_PROBE, sequence, buffer)
+  }
+
+  /**
+   * Generates a Link ACK frame in response to a valid probe
+   */
+  static createAckFrame(sessionId: number, nonce: number, snrDb: number, sequence = 1): Uint8Array {
+    const buffer = new Uint8Array(16)
+    const view = new DataView(buffer.buffer)
+    view.setUint32(0, sessionId, false)
+    view.setUint32(4, nonce, false)
+    view.setFloat32(8, snrDb, false)
+    view.setUint32(12, Date.now() >>> 0, false)
+    return encodeFrame(sessionId, AcousticFrameType.LINK_ACK, sequence, buffer)
+  }
+
+  /**
+   * Generates a Channel Report control frame
+   */
+  static createChannelReportFrame(sessionId: number, validRatio: number, snrDb: number, sequence = 1): Uint8Array {
+    const buffer = new Uint8Array(12)
+    const view = new DataView(buffer.buffer)
+    view.setUint32(0, sessionId, false)
+    view.setFloat32(4, validRatio, false)
+    view.setFloat32(8, snrDb, false)
+    return encodeFrame(sessionId, AcousticFrameType.CHANNEL_REPORT, sequence, buffer)
   }
 
   /**
@@ -42,6 +65,18 @@ export class AcousticLinkTester {
     const sessionId = view.getUint32(0, false)
     const nonce = view.getUint32(4, false)
     return { sessionId, nonce }
+  }
+
+  /**
+   * Validates a received ACK payload
+   */
+  static parseAckPayload(payload: Uint8Array): { sessionId: number; nonce: number; snrDb: number } | null {
+    if (payload.length < 16) return null
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
+    const sessionId = view.getUint32(0, false)
+    const nonce = view.getUint32(4, false)
+    const snrDb = view.getFloat32(8, false)
+    return { sessionId, nonce, snrDb }
   }
 
   /**

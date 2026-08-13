@@ -1,11 +1,21 @@
 import { crc32 } from './crc32'
 
 export enum AcousticFrameType {
-  SESSION_HEADER = 0x01,
-  DATA = 0x02,
-  END = 0x03,
-  CONTROL = 0x04,
-  CALIBRATION = 0x05,
+  BEACON = 0x01,
+  LINK_PROBE = 0x02,
+  LINK_ACK = 0x03,
+  CHANNEL_REPORT = 0x04,
+  PROFILE_PROPOSE = 0x05,
+  PROFILE_ACCEPT = 0x06,
+  PROFILE_REJECT = 0x07,
+  TEST_FILE_START = 0x08,
+  TEST_FILE_COMPLETE = 0x09,
+  TRANSFER_START = 0x0A,
+  TRANSFER_STATUS = 0x0B,
+  TRANSFER_END = 0x0C,
+  SESSION_HEADER = 0x10,
+  DATA = 0x11,
+  END = 0x12,
 }
 
 export interface AcousticFrame {

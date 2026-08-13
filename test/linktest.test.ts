@@ -1,18 +1,37 @@
 import { describe, expect, it } from 'vitest'
+import { decodeFrame } from '../app/acoustic/protocol/frame'
 import { AcousticLinkTester } from '../app/acoustic/transport/link-test'
 
 describe('Acoustic Link Tester Preflight', () => {
-  it('should encode and decode link probe payload cleanly', () => {
+  it('should encode and decode link probe control frame', () => {
     const sessionId = 123456
     const nonce = 987654
 
-    const payload = AcousticLinkTester.createProbePayload(sessionId, nonce)
-    expect(payload.length).toBe(12)
+    const frameBytes = AcousticLinkTester.createProbeFrame(sessionId, nonce)
+    const decoded = decodeFrame(frameBytes)
 
-    const parsed = AcousticLinkTester.parseProbePayload(payload)
-    expect(parsed).not.toBeNull()
-    expect(parsed?.sessionId).toBe(sessionId)
+    expect(decoded).not.toBeNull()
+    expect(decoded?.sessionId).toBe(sessionId)
+    expect(decoded?.frameType).toBe(0x02 /* LINK_PROBE */)
+
+    const parsed = AcousticLinkTester.parseProbePayload(decoded!.payload)
     expect(parsed?.nonce).toBe(nonce)
+  })
+
+  it('should encode and decode link ACK control frame', () => {
+    const sessionId = 123456
+    const nonce = 987654
+    const snrDb = 22.5
+
+    const frameBytes = AcousticLinkTester.createAckFrame(sessionId, nonce, snrDb)
+    const decoded = decodeFrame(frameBytes)
+
+    expect(decoded).not.toBeNull()
+    expect(decoded?.frameType).toBe(0x03 /* LINK_ACK */)
+
+    const parsed = AcousticLinkTester.parseAckPayload(decoded!.payload)
+    expect(parsed?.nonce).toBe(nonce)
+    expect(parsed?.snrDb).toBeCloseTo(snrDb, 1)
   })
 
   it('should classify link quality based on SNR and valid packet ratio', () => {

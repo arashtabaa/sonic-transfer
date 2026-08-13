@@ -28,7 +28,7 @@ async function runLinkCheck() {
   linkTestStatus.value = 'Sending preflight link test probe...'
 
   const nonce = Math.floor(Math.random() * 1000000)
-  const probePayload = AcousticLinkTester.createProbePayload(12345, nonce)
+  const probePayload = AcousticLinkTester.createProbeFrame(12345, nonce)
 
   // Trigger short probe transmission via store
   await store.startTransmission(probePayload, 'preflight-link-probe.bin', 'application/octet-stream')
