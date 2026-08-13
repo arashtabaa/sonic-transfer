@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://arashtabaa.github.io/sonic-transfer/"><img src="https://img.shields.io/badge/Live_Demo-https%3A%2F%2Farashtabaa.github.io%2Fsonic--transfer%2F-blue?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Live Demo"></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License MIT">
   <img src="https://img.shields.io/badge/TypeScript-5.7-blue" alt="TypeScript">
   <img src="https://img.shields.io/badge/Nuxt-3.15-emerald" alt="Nuxt">
@@ -161,7 +165,7 @@ Instead of requiring retransmission of lost packets via network handshakes, Soni
 
 ### Local Setup & Development
 ```bash
-git clone https://github.com/qifi-dev/qrs.git sonic-transfer
+git clone https://github.com/arashtabaa/sonic-transfer.git
 cd sonic-transfer
 
 # Install dependencies
