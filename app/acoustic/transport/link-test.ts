@@ -10,12 +10,50 @@ export interface LinkTestOptions {
 export interface LinkTestResult {
   success: boolean
   stage: 'output_ready' | 'carrier_detected' | 'preamble_detected' | 'crc_verified' | 'failed'
-  snrDb: number
+  snrDb: number | null
   packetSuccessRatio: number
   quality: 'Excellent' | 'Good' | 'Marginal' | 'Poor' | 'Failed'
   nonce: number
   recommendedProfile: ModemProfileKey
   message: string
+}
+
+export interface FrequencyProbePayload {
+  protocolVersion: number
+  sessionId: number
+  probeId: number
+  targetFrequencyHz: number
+  toneDurationMs: number
+  requestedGain: number
+}
+
+export interface FrequencyReportPayload {
+  sessionId: number
+  probeId: number
+  requestedFrequency: number
+  detectedFrequency: number | null
+  freqError: number | null
+  signalRms: number | null
+  noiseFloor: number | null
+  snrDb: number | null
+  clipped: boolean
+  carrierDetected: boolean
+}
+
+export function encodeFrequencyProbe(payload: FrequencyProbePayload): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+export function decodeFrequencyProbe(bytes: Uint8Array): FrequencyProbePayload | null {
+  try { return JSON.parse(new TextDecoder().decode(bytes)) } catch { return null }
+}
+
+export function encodeFrequencyReport(payload: FrequencyReportPayload): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+export function decodeFrequencyReport(bytes: Uint8Array): FrequencyReportPayload | null {
+  try { return JSON.parse(new TextDecoder().decode(bytes)) } catch { return null }
 }
 
 export class AcousticLinkTester {
@@ -34,12 +72,12 @@ export class AcousticLinkTester {
   /**
    * Generates a Link ACK frame in response to a valid probe
    */
-  static createAckFrame(sessionId: number, nonce: number, snrDb: number, sequence = 1): Uint8Array {
+  static createAckFrame(sessionId: number, nonce: number, snrDb: number | null, sequence = 1): Uint8Array {
     const buffer = new Uint8Array(16)
     const view = new DataView(buffer.buffer)
     view.setUint32(0, sessionId, false)
     view.setUint32(4, nonce, false)
-    view.setFloat32(8, snrDb, false)
+    view.setFloat32(8, snrDb || 0, false)
     view.setUint32(12, Date.now() >>> 0, false)
     return encodeFrame(sessionId, AcousticFrameType.LINK_ACK, sequence, buffer)
   }
@@ -47,12 +85,12 @@ export class AcousticLinkTester {
   /**
    * Generates a Channel Report control frame
    */
-  static createChannelReportFrame(sessionId: number, validRatio: number, snrDb: number, sequence = 1): Uint8Array {
+  static createChannelReportFrame(sessionId: number, validRatio: number, snrDb: number | null, sequence = 1): Uint8Array {
     const buffer = new Uint8Array(12)
     const view = new DataView(buffer.buffer)
     view.setUint32(0, sessionId, false)
     view.setFloat32(4, validRatio, false)
-    view.setFloat32(8, snrDb, false)
+    view.setFloat32(8, snrDb || 0, false)
     return encodeFrame(sessionId, AcousticFrameType.CHANNEL_REPORT, sequence, buffer)
   }
 
@@ -82,8 +120,8 @@ export class AcousticLinkTester {
   /**
    * Classify link quality based on measured SNR and packet error rate
    */
-  static classifyQuality(snrDb: number, validRatio: number): LinkTestResult['quality'] {
-    if (!validRatio || validRatio < 0.5) return 'Failed'
+  static classifyQuality(snrDb: number | null, validRatio: number): LinkTestResult['quality'] {
+    if (!validRatio || validRatio < 0.5 || snrDb === null) return 'Failed'
     if (snrDb >= 20 && validRatio >= 0.9) return 'Excellent'
     if (snrDb >= 14 && validRatio >= 0.75) return 'Good'
     if (snrDb >= 8 && validRatio >= 0.5) return 'Marginal'

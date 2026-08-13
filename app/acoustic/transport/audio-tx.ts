@@ -5,6 +5,12 @@ interface AudioTxOptions {
   gain?: number
 }
 
+interface QueuedFrameItem {
+  frameId: number
+  frame: AudioFrame
+  resolve?: () => void
+}
+
 function getWorkletPath(filename: string): string {
   const baseURL = (typeof window !== 'undefined' && (window as any).__NUXT__?.config?.app?.baseURL) || '/'
   const cleanBase = baseURL.endsWith('/') ? baseURL : `${baseURL}/`
@@ -20,9 +26,11 @@ export class AudioTransmitter {
   private audioWorkletNode: AudioWorkletNode | null = null
   private gainNode: GainNode | null = null
   private isPlaying = false
-  private queue: AudioFrame[] = []
+  private queue: QueuedFrameItem[] = []
   private isBufferSourceActive = false
+  private frameResolvers = new Map<number, () => void>()
   private drainedResolvers: Array<() => void> = []
+  private nextFrameId = 1
 
   constructor(private options: AudioTxOptions = {}) {}
 
@@ -48,8 +56,18 @@ export class AudioTransmitter {
       this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'acoustic-tx-worklet')
       this.audioWorkletNode.connect(this.gainNode)
       this.audioWorkletNode.port.onmessage = (event) => {
-        if (event.data === 'fill_buffer') {
+        if (!event.data) return
+        if (event.data.type === 'fill_buffer') {
           this.sendNextFrameToWorklet()
+        } else if (event.data.type === 'frame_finished') {
+          const frameId = event.data.frameId as number
+          const resolver = this.frameResolvers.get(frameId)
+          if (resolver) {
+            this.frameResolvers.delete(frameId)
+            resolver()
+          }
+        } else if (event.data.type === 'worklet_drained') {
+          this.notifyDrained()
         }
       }
       this.isPlaying = true
@@ -74,11 +92,16 @@ export class AudioTransmitter {
       this.audioWorkletNode = null
     }
 
+    this.frameResolvers.forEach(r => r())
+    this.frameResolvers.clear()
     this.notifyDrained()
   }
 
-  public enqueueFrame(frame: AudioFrame): void {
-    this.queue.push(frame)
+  public enqueueFrame(frame: AudioFrame): number {
+    const frameId = this.nextFrameId++
+    const item: QueuedFrameItem = { frameId, frame }
+    this.queue.push(item)
+
     if (this.isPlaying) {
       if (this.audioWorkletNode) {
         this.sendNextFrameToWorklet()
@@ -86,15 +109,18 @@ export class AudioTransmitter {
         this.playBufferSourceQueue()
       }
     }
+    return frameId
   }
 
-  public async playFrame(frame: AudioFrame): Promise<void> {
-    this.enqueueFrame(frame)
-    await this.waitUntilDrained()
+  public playFrame(frame: AudioFrame): Promise<void> {
+    const frameId = this.enqueueFrame(frame)
+    return new Promise((resolve) => {
+      this.frameResolvers.set(frameId, resolve)
+    })
   }
 
   public isQueueEmpty(): boolean {
-    return this.queue.length === 0 && !this.isBufferSourceActive
+    return this.queue.length === 0 && !this.isBufferSourceActive && this.frameResolvers.size === 0
   }
 
   public waitUntilDrained(): Promise<void> {
@@ -122,9 +148,13 @@ export class AudioTransmitter {
     if (!this.audioWorkletNode || !this.isPlaying) return
 
     if (this.queue.length > 0) {
-      const frame = this.queue.shift()!
-      this.audioWorkletNode.port.postMessage({ type: 'play_samples', samples: frame.samples })
-    } else {
+      const item = this.queue.shift()!
+      this.audioWorkletNode.port.postMessage({
+        type: 'play_samples',
+        frameId: item.frameId,
+        samples: item.frame.samples,
+      })
+    } else if (this.queue.length === 0 && this.frameResolvers.size === 0) {
       this.notifyDrained()
     }
   }
@@ -137,15 +167,23 @@ export class AudioTransmitter {
     }
 
     this.isBufferSourceActive = true
-    const frame = this.queue.shift()!
-    const buffer = this.audioContext.createBuffer(1, frame.samples.length, this.audioContext.sampleRate)
-    buffer.copyToChannel(frame.samples, 0)
+    const item = this.queue.shift()!
+    const buffer = this.audioContext.createBuffer(1, item.frame.samples.length, this.audioContext.sampleRate)
+    buffer.copyToChannel(item.frame.samples, 0)
 
     const source = this.audioContext.createBufferSource()
     source.buffer = buffer
     source.connect(this.gainNode)
     source.onended = () => {
       this.isBufferSourceActive = false
+
+      // Resolve frame promise on source.onended ONLY!
+      const resolver = this.frameResolvers.get(item.frameId)
+      if (resolver) {
+        this.frameResolvers.delete(item.frameId)
+        resolver()
+      }
+
       if (this.isPlaying && this.queue.length > 0) {
         this.playBufferSourceQueue()
       } else {

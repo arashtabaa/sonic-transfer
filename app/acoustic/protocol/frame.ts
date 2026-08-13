@@ -42,6 +42,29 @@ export interface SessionHeaderPayload {
   modemProfile: string
 }
 
+export interface TestFileCompletePayload {
+  protocolVersion: number
+  sessionId: number
+  testTransferId: number
+  expectedSha256: string
+  actualSha256: string
+  pass: boolean
+}
+
+export function encodeTestFileComplete(payload: TestFileCompletePayload): Uint8Array {
+  const jsonStr = JSON.stringify(payload)
+  return new TextEncoder().encode(jsonStr)
+}
+
+export function decodeTestFileComplete(bytes: Uint8Array): TestFileCompletePayload | null {
+  try {
+    const jsonStr = new TextDecoder().decode(bytes)
+    return JSON.parse(jsonStr) as TestFileCompletePayload
+  } catch {
+    return null
+  }
+}
+
 export const PREAMBLE_BYTES = new Uint8Array([0x53, 0x4F, 0x4E, 0x49]) // "SONI"
 export const PROTOCOL_VERSION = 1
 export const FRAME_HEADER_SIZE = 4 + 1 + 4 + 1 + 4 + 2 // Preamble (4) + Ver(1) + SessionID(4) + Type(1) + Seq(4) + Len(2)
