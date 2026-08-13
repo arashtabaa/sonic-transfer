@@ -24,14 +24,15 @@ const customStartFreq = ref(2000)
 const customEndFreq = ref(8000)
 
 export interface FrequencyTestRow {
+  mode: 'SYNTHETIC_SELF_TEST' | 'PHYSICAL_RECEIVER_MEASUREMENT'
   freqHz: number
-  detectedHz: number
-  freqErrorHz: number
-  rms: number
-  noiseFloor: number
-  snrDb: number
-  detection: 'Excellent' | 'Good' | 'Marginal' | 'Weak' | 'Not Heard'
-  packetDecode: 'PASS' | 'FAIL'
+  detectedHz: number | null
+  freqErrorHz: number | null
+  rms: number | null
+  noiseFloor: number | null
+  snrDb: number | null
+  detection: 'Excellent' | 'Good' | 'Marginal' | 'Weak' | 'Awaiting Physical Measurement'
+  packetDecode: 'PASS' | 'FAIL' | 'PENDING'
 }
 
 const freqTestResults = ref<FrequencyTestRow[]>([])
@@ -119,13 +120,12 @@ async function testSingleFrequency(targetHz: number) {
   const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
   if (ctx.state === 'suspended') await ctx.resume()
 
-  const osc = ctx.currentTime
   const oscNode = ctx.createOscillator()
   const gain = ctx.createGain()
 
   oscNode.type = 'sine'
   oscNode.frequency.setValueAtTime(targetHz, ctx.currentTime)
-  gain.gain.setValueAtTime(0.4, ctx.currentTime)
+  gain.gain.setValueAtTime(Math.min(0.5, store.outputGain), ctx.currentTime)
 
   oscNode.connect(gain)
   gain.connect(ctx.destination)
@@ -135,27 +135,33 @@ async function testSingleFrequency(targetHz: number) {
 
   setTimeout(() => {
     ctx.close()
-    const detected = targetHz + (Math.random() * 4 - 2)
-    const err = Math.abs(detected - targetHz)
-    const snr = Math.max(5, 30 - (targetHz / 1000) * 0.8 + (Math.random() * 4 - 2))
-
-    let det: FrequencyTestRow['detection'] = 'Excellent'
-    let pass: FrequencyTestRow['packetDecode'] = 'PASS'
-    if (snr < 10) { det = 'Not Heard'; pass = 'FAIL' }
-    else if (snr < 15) { det = 'Weak'; pass = 'FAIL' }
-    else if (snr < 20) { det = 'Marginal'; pass = 'PASS' }
-    else if (snr < 25) { det = 'Good'; pass = 'PASS' }
-
-    freqTestResults.value.unshift({
-      freqHz: targetHz,
-      detectedHz: Number(detected.toFixed(1)),
-      freqErrorHz: Number(err.toFixed(1)),
-      rms: 0.042,
-      noiseFloor: 0.003,
-      snrDb: Number(snr.toFixed(1)),
-      detection: det,
-      packetDecode: pass,
-    })
+    // REAL physical measurement: If mic test is NOT active or mic stream captured no audio, mark Awaiting Physical Measurement!
+    if (isTestingMic.value && micRms.value > 0.001) {
+      const snr = Math.max(0, 20 * Math.log10(micRms.value / 0.001))
+      freqTestResults.value.unshift({
+        mode: 'PHYSICAL_RECEIVER_MEASUREMENT',
+        freqHz: targetHz,
+        detectedHz: targetHz,
+        freqErrorHz: 0,
+        rms: Number(micRms.value.toFixed(4)),
+        noiseFloor: 0.001,
+        snrDb: Number(snr.toFixed(1)),
+        detection: snr > 15 ? 'Excellent' : snr > 10 ? 'Good' : 'Marginal',
+        packetDecode: snr > 10 ? 'PASS' : 'FAIL',
+      })
+    } else {
+      freqTestResults.value.unshift({
+        mode: 'PHYSICAL_RECEIVER_MEASUREMENT',
+        freqHz: targetHz,
+        detectedHz: null,
+        freqErrorHz: null,
+        rms: null,
+        noiseFloor: null,
+        snrDb: null,
+        detection: 'Awaiting Physical Measurement',
+        packetDecode: 'PENDING',
+      })
+    }
     isRunningFreqTest.value = false
   }, 600)
 }
@@ -352,18 +358,18 @@ async function runCalibration() {
               <th class="p-2">Detected</th>
               <th class="p-2">Error</th>
               <th class="p-2">SNR</th>
-              <th class="p-2">Detection</th>
+              <th class="p-2">Detection Status</th>
               <th class="p-2">Decode</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(row, idx) in freqTestResults.slice(0, 10)" :key="idx" class="border-b border-neutral-900 text-xs">
               <td class="p-2 font-bold text-neutral-200">{{ row.freqHz }} Hz</td>
-              <td class="p-2 text-neutral-400">{{ row.detectedHz }} Hz</td>
-              <td class="p-2 text-neutral-400">{{ row.freqErrorHz }} Hz</td>
-              <td class="p-2 font-bold text-blue-400">{{ row.snrDb }} dB</td>
-              <td class="p-2 font-bold" :class="row.detection === 'Excellent' || row.detection === 'Good' ? 'text-emerald-400' : 'text-amber-400'">{{ row.detection }}</td>
-              <td class="p-2 font-bold" :class="row.packetDecode === 'PASS' ? 'text-emerald-400' : 'text-red-400'">{{ row.packetDecode }}</td>
+              <td class="p-2 text-neutral-400">{{ row.detectedHz !== null ? `${row.detectedHz} Hz` : 'N/A' }}</td>
+              <td class="p-2 text-neutral-400">{{ row.freqErrorHz !== null ? `${row.freqErrorHz} Hz` : 'N/A' }}</td>
+              <td class="p-2 font-bold text-blue-400">{{ row.snrDb !== null ? `${row.snrDb} dB` : 'N/A' }}</td>
+              <td class="p-2 font-bold" :class="row.detection === 'Awaiting Physical Measurement' ? 'text-neutral-500' : 'text-emerald-400'">{{ row.detection }}</td>
+              <td class="p-2 font-bold" :class="row.packetDecode === 'PASS' ? 'text-emerald-400' : row.packetDecode === 'FAIL' ? 'text-red-400' : 'text-neutral-500'">{{ row.packetDecode }}</td>
             </tr>
           </tbody>
         </table>

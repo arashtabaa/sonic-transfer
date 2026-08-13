@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { readFileHeaderMetaFromBuffer } from 'luby-transform'
+import { appendFileHeaderMetaToBuffer, readFileHeaderMetaFromBuffer } from 'luby-transform'
 import {
   AcousticFrameType,
   AcousticPacketizer,
@@ -15,7 +15,7 @@ import {
 } from '~/acoustic'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
 import { createLTDecodeWorker } from '~/composables/lt-decode'
-import { generateTestPayload } from '~/constants/testPayload'
+import { EXPECTED_TEST_SHA256, generateTestPayload } from '~/constants/testPayload'
 
 export enum SessionStep {
   NOT_READY = 'NOT_READY',
@@ -88,7 +88,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const receivedSha256 = ref<string | null>(null)
   const isIntegrityVerified = ref(false)
 
-  // Active Link Verification Nonce
+  // Active Link Verification Session & Nonce (Requirement 5)
+  let activeProbeSessionId: number | null = null
   let activeProbeNonce: number | null = null
 
   // Singletons
@@ -100,6 +101,19 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const liveStats = ref(metricsCollector.getStats())
   let statsInterval: any = null
   let wakeLock: any = null
+
+  // Modems: Dedicated ROBUST controlModem vs negotiated dataModem (Requirement 3)
+  function getControlModem(sampleRate = 48000): BFSKAcousticModem {
+    const config = getProfileConfig(ModemProfileKey.ROBUST, sampleRate)
+    config.gain = outputGain.value
+    return new BFSKAcousticModem(config)
+  }
+
+  function getDataModem(sampleRate = 48000): BFSKAcousticModem {
+    const config = getProfileConfig(selectedProfile.value, sampleRate)
+    config.gain = outputGain.value
+    return new BFSKAcousticModem(config)
+  }
 
   async function requestWakeLock() {
     try {
@@ -132,100 +146,138 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     sessionStep.value = SessionStep.READY_FOR_FILE
   }
 
-  // --- Real Acoustic Link Probe & ACK Verification ---
+  // --- Real Half-Duplex Acoustic Link Probe & ACK Verification (Requirement 4 & 5) ---
   async function runAcousticLinkCheck() {
     if (isTransmitting.value) return
     sessionStep.value = SessionStep.VERIFYING_LINK
-    linkCheckMessage.value = 'Broadcasting LINK_PROBE and listening for acoustic LINK_ACK...'
+    linkCheckMessage.value = 'Transmitting LINK_PROBE...'
 
-    activeProbeNonce = Math.floor(Math.random() * 1000000)
-    const sessionId = Math.floor(Math.random() * 1000000)
-    const probeFrame = AcousticLinkTester.createProbeFrame(sessionId, activeProbeNonce)
+    // Requirement 5: Generate session ID and nonce using crypto.getRandomValues()
+    const randomArray = new Uint32Array(2)
+    crypto.getRandomValues(randomArray)
+    activeProbeSessionId = randomArray[0]!
+    activeProbeNonce = randomArray[1]!
 
-    // 1. Play LINK_PROBE over speaker
+    const probeFrame = AcousticLinkTester.createProbeFrame(activeProbeSessionId, activeProbeNonce)
+    const controlModem = getControlModem(48000)
+
     if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
-    await transmitter.start()
-    const config = getProfileConfig(ModemProfileKey.ROBUST, transmitter.getSampleRate())
-    config.gain = outputGain.value
-    const modem = new BFSKAcousticModem(config)
 
-    const audioFrame = modem.encode(probeFrame)
+    // Step 1: Transmit LINK_PROBE frame
+    await transmitter.start()
+    const audioFrame = controlModem.encode(probeFrame)
     transmitter.enqueueFrame(audioFrame)
 
-    // 2. Start receiver listening for LINK_ACK on microphone
+    // Step 2: Half-duplex turnaround - Wait for audio output to complete before switching to RX
+    setTimeout(async () => {
+      transmitter?.stop()
+      linkCheckMessage.value = 'LINK_PROBE finished. Half-duplex turnaround: Listening for LINK_ACK...'
+
+      if (!packetizer) packetizer = new AcousticPacketizer()
+      if (!receiver) {
+        receiver = new AudioReceiver({
+          onAudioData: (samples) => {
+            liveSamples.value = samples
+            // Requirement 3: Always decode control frames using dedicated ROBUST controlModem!
+            const packets = controlModem.decode(samples)
+            for (const pkt of packets) {
+              const parsed = packetizer?.parseIncomingBuffer(pkt)
+              if (parsed?.frame && parsed.frame.frameType === AcousticFrameType.LINK_ACK) {
+                const ack = AcousticLinkTester.parseAckPayload(parsed.frame.payload)
+                // Requirement 5: Reject unless CRC valid, LINK_ACK, sessionId matches, nonce matches
+                if (
+                  ack &&
+                  ack.sessionId === activeProbeSessionId &&
+                  ack.nonce === activeProbeNonce
+                ) {
+                  sessionStep.value = SessionStep.LINK_VERIFIED
+                  linkCheckMessage.value = `LINK VERIFIED! Acoustic ACK received (Session: ${ack.sessionId}, Nonce: ${ack.nonce}, SNR: ${ack.snrDb.toFixed(1)} dB).`
+                  receiver?.stop()
+                  activeProbeSessionId = null
+                  activeProbeNonce = null
+                }
+              }
+            }
+          },
+        })
+      }
+
+      await receiver.start(selectedMicId.value || undefined)
+
+      // Timeout handler: 10s ACK Timeout -> FAILURE
+      setTimeout(() => {
+        if (sessionStep.value === SessionStep.VERIFYING_LINK) {
+          sessionStep.value = SessionStep.NOT_READY
+          linkCheckMessage.value = 'Link Verification Failed: ACK Timeout. Ensure receiver is listening.'
+          if (receiver) receiver.stop()
+          activeProbeSessionId = null
+          activeProbeNonce = null
+        }
+      }, 10000)
+    }, audioFrame.durationMs + 200)
+  }
+
+  // --- Real Test File Transfer (Requirement 7) ---
+  async function runTestFileTransfer() {
+    sessionStep.value = SessionStep.TEST_TRANSFERRING
+
+    const testPayload = generateTestPayload()
+    sendSha256.value = EXPECTED_TEST_SHA256
+
+    // Start transmission of deterministic test payload
+    await startTransmission(testPayload, 'sonic-test-fixture.bin', 'application/octet-stream')
+
+    // Start receiver listening for TEST_FILE_COMPLETE frame from receiver!
+    const controlModem = getControlModem(48000)
     if (!receiver) {
       receiver = new AudioReceiver({
         onAudioData: (samples) => {
-          liveSamples.value = samples
-          const packets = modem.decode(samples)
+          const packets = controlModem.decode(samples)
           for (const pkt of packets) {
             const parsed = packetizer?.parseIncomingBuffer(pkt)
-            if (parsed?.frame && parsed.frame.frameType === AcousticFrameType.LINK_ACK) {
-              const ack = AcousticLinkTester.parseAckPayload(parsed.frame.payload)
-              if (ack && ack.nonce === activeProbeNonce) {
-                // REAL ACK DECODED!
-                sessionStep.value = SessionStep.LINK_VERIFIED
-                linkCheckMessage.value = `LINK VERIFIED! Real acoustic ACK received (SNR: ${ack.snrDb.toFixed(1)} dB).`
-                transmitter?.stop()
-                receiver?.stop()
-                activeProbeNonce = null
-              }
+            if (parsed?.frame && parsed.frame.frameType === AcousticFrameType.TEST_FILE_COMPLETE) {
+              // TEST_FILE_COMPLETE ACK RECEIVED ACOUSTICALLY FROM RECEIVER!
+              stopTransmission()
+              receiver?.stop()
+              sessionStep.value = SessionStep.TEST_TRANSFER_VERIFIED
             }
           }
         },
       })
     }
-
-    if (!packetizer) packetizer = new AcousticPacketizer()
     await receiver.start(selectedMicId.value || undefined)
-
-    // 3. Timeout handler: ONLY TIMEOUT/FAILURE IS ALLOWED ON TIMER!
-    setTimeout(() => {
-      if (sessionStep.value === SessionStep.VERIFYING_LINK) {
-        sessionStep.value = SessionStep.NOT_READY
-        linkCheckMessage.value = 'Acoustic link verification failed: ACK Timeout. Ensure receiver is listening nearby.'
-        if (transmitter) transmitter.stop()
-        if (receiver) receiver.stop()
-        activeProbeNonce = null
-      }
-    }, 8000)
-  }
-
-  // --- Real Test File Transfer ---
-  async function runTestFileTransfer() {
-    sessionStep.value = SessionStep.TEST_TRANSFERRING
-    const testPayload = generateTestPayload()
-    const testHash = await computeSha256Hex(testPayload)
-
-    await startTransmission(testPayload, 'sonic-test-fixture.bin', 'application/octet-stream')
-
-    // Note: sessionStep transitions to TEST_TRANSFER_VERIFIED ONLY when receiver sends TEST_FILE_COMPLETE or when exact SHA-256 match is verified!
   }
 
   // --- Sender Transmission ---
   async function startTransmission(data?: Uint8Array, filename?: string, contentType?: string) {
     if (isTransmitting.value) return
 
-    const payloadData = data || storedData.value
-    if (!payloadData) return
+    const rawData = data || storedData.value
+    if (!rawData) return
 
     sendFilename.value = filename || sendFilename.value || 'file.bin'
     sendContentType.value = contentType || sendContentType.value || 'application/octet-stream'
-    sendTotalBytes.value = payloadData.length
-    sendSha256.value = await computeSha256Hex(payloadData)
+    sendTotalBytes.value = rawData.length
+
+    // Requirement 8: Compute SHA-256 over ORIGINAL FILE BYTES!
+    sendSha256.value = await computeSha256Hex(rawData)
     framesSent.value = 0
     bytesSent.value = 0
+
+    // Requirement 8: Prepare canonical transfer payload = appendFileHeaderMetaToBuffer(rawData, meta)
+    const canonicalPayload = appendFileHeaderMetaToBuffer(rawData, {
+      filename: sendFilename.value,
+      contentType: sendContentType.value,
+    })
 
     if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
     if (!packetizer) packetizer = new AcousticPacketizer()
 
     await transmitter.start()
-    const config = getProfileConfig(selectedProfile.value, transmitter.getSampleRate())
-    config.gain = outputGain.value
-    const modem = new BFSKAcousticModem(config)
+    const dataModem = getDataModem(transmitter.getSampleRate())
 
     const { createEncoder } = await import('luby-transform')
-    const encoder = createEncoder(payloadData, sliceSize.value, true)
+    const encoder = createEncoder(canonicalPayload, sliceSize.value, true)
     const fountain = encoder.fountain()
 
     let sequence = 0
@@ -245,7 +297,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           sessionId,
           filename: sendFilename.value || 'file.bin',
           contentType: sendContentType.value || 'application/octet-stream',
-          originalSize: payloadData.length,
+          originalSize: rawData.length,
           encodedSize: encoder.compressed.length,
           fileChecksum: encoder.checksum,
           sha256Hex: sendSha256.value || undefined,
@@ -258,7 +310,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         frameBuffer = encodeFrame(sessionId, AcousticFrameType.DATA, sequence, blockBytes)
       }
 
-      const audioFrame = modem.encode(frameBuffer)
+      const audioFrame = dataModem.encode(frameBuffer)
       liveSamples.value = audioFrame.samples
       transmitter!.enqueueFrame(audioFrame)
 
@@ -267,7 +319,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       sequence++
 
       if (isTransmitting.value) {
-        setTimeout(step, config.symbolDurationMs * 2)
+        setTimeout(step, dataModem.config.symbolDurationMs * 2)
       }
     }
 
@@ -301,19 +353,26 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     dspStage.value = 'SEARCHING_FOR_SIGNAL'
     metricsCollector.start()
 
-    const config = getProfileConfig(selectedProfile.value, 48000)
-    const modem = new BFSKAcousticModem(config)
+    const controlModem = getControlModem(48000)
+    const dataModem = getDataModem(48000)
 
     if (!receiver) {
       receiver = new AudioReceiver({
         onAudioData: (samples) => {
           liveSamples.value = samples
-          const packets = modem.decode(samples)
-          if (packets.length > 0) {
+
+          // Requirement 3: First try controlModem (ROBUST), then dataModem
+          const controlPackets = controlModem.decode(samples)
+          for (const pkt of controlPackets) {
+            processIncomingPacket(pkt)
+          }
+
+          const dataPackets = dataModem.decode(samples)
+          if (dataPackets.length > 0) {
             dspStage.value = 'CARRIER_LOCKED'
           }
-          for (const packet of packets) {
-            processIncomingPacket(packet)
+          for (const pkt of dataPackets) {
+            processIncomingPacket(pkt)
           }
         },
       })
@@ -341,17 +400,30 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     dspStage.value = 'CRC_VALID'
     metricsCollector.recordPacket(parsed.frame.payload.length, true)
 
-    // Handle LINK_PROBE: Respond with LINK_ACK acoustically!
+    // Requirement 4: Real Half-Duplex Turnaround on LINK_PROBE!
     if (parsed.frame.frameType === AcousticFrameType.LINK_PROBE) {
       const probePayload = AcousticLinkTester.parseProbePayload(parsed.frame.payload)
       if (probePayload) {
-        const ackFrame = AcousticLinkTester.createAckFrame(probePayload.sessionId, probePayload.nonce, liveStats.value.snrDb || 20.0)
-        if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
-        await transmitter.start()
-        const config = getProfileConfig(ModemProfileKey.ROBUST, transmitter.getSampleRate())
-        const modem = new BFSKAcousticModem(config)
-        const audioFrame = modem.encode(ackFrame)
-        transmitter.enqueueFrame(audioFrame)
+        // Step 1: Stop receiver temporarily
+        if (receiver) receiver.stop()
+
+        // Step 2: Short guard interval before transmitting LINK_ACK
+        setTimeout(async () => {
+          const ackFrame = AcousticLinkTester.createAckFrame(probePayload.sessionId, probePayload.nonce, liveStats.value.snrDb || 0)
+          if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
+          await transmitter.start()
+          const controlModem = getControlModem(transmitter.getSampleRate())
+          const audioFrame = controlModem.encode(ackFrame)
+          transmitter.enqueueFrame(audioFrame)
+
+          // Step 3: Wait for ACK playback to finish, then return to RX
+          setTimeout(async () => {
+            transmitter?.stop()
+            if (isListening.value && receiver) {
+              await receiver.start(selectedMicId.value || undefined)
+            }
+          }, audioFrame.durationMs + 200)
+        }, 200)
       }
     }
 
@@ -377,28 +449,38 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         if (success && !downloadUrl.value) {
           dspStage.value = 'RECONSTRUCTING'
           const decodedMerged = (await decoderWorker.getDecoded())!
-          const [mergedData, meta] = readFileHeaderMetaFromBuffer(decodedMerged)
+          const [originalBytes, meta] = readFileHeaderMetaFromBuffer(decodedMerged)
 
-          // REAL SHA-256 COMPARISON!
-          const actualHash = await computeSha256Hex(mergedData)
+          // Requirement 8: Compute SHA-256 over ORIGINAL FILE BYTES!
+          const actualHash = await computeSha256Hex(originalBytes)
           receivedSha256.value = actualHash
 
+          // Requirement 8: Missing expected SHA-256 results in INTEGRITY UNVERIFIED!
           if (expectedSha256.value) {
             isIntegrityVerified.value = (actualHash === expectedSha256.value)
           } else {
-            isIntegrityVerified.value = true
+            isIntegrityVerified.value = false // UNVERIFIED!
           }
 
           if (isIntegrityVerified.value) {
-            const blob = new Blob([mergedData], { type: meta.contentType })
+            const blob = new Blob([originalBytes], { type: meta.contentType })
             downloadUrl.value = URL.createObjectURL(blob)
             downloadedFilename.value = meta.filename || 'received-file'
             downloadedContentType.value = meta.contentType
             dspStage.value = 'COMPLETE'
 
-            // If test fixture, update session step
+            // Requirement 7: Acoustically transmit TEST_FILE_COMPLETE ACK frame back to Sender!
             if (downloadedFilename.value === 'sonic-test-fixture.bin') {
-              sessionStep.value = SessionStep.TEST_TRANSFER_VERIFIED
+              const completeFrame = encodeFrame(
+                receiveHeader.value?.sessionId || 999,
+                AcousticFrameType.TEST_FILE_COMPLETE,
+                1,
+                new TextEncoder().encode(actualHash),
+              )
+              if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
+              await transmitter.start()
+              const controlModem = getControlModem(transmitter.getSampleRate())
+              transmitter.enqueueFrame(controlModem.encode(completeFrame))
             }
           }
         }

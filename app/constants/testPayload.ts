@@ -1,6 +1,5 @@
-import { crc32 } from '~/acoustic/protocol/crc32'
+import { crc32 } from '../acoustic/protocol/crc32'
 
-// Deterministic 8 KiB built-in test payload
 export const TEST_PAYLOAD_SIZE = 8192
 
 export function generateTestPayload(): Uint8Array {
@@ -12,3 +11,6 @@ export function generateTestPayload(): Uint8Array {
 }
 
 export const TEST_PAYLOAD_CRC = crc32(generateTestPayload())
+
+// Pre-computed SHA-256 for deterministic 8 KiB test payload
+export const EXPECTED_TEST_SHA256 = '3faac63d133ee546e983a131136bc44c9d3c0910d1c6b143d60509ef90a386e7'

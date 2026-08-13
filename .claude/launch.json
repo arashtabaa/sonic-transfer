@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "sonic-transfer-dev",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "name": "sonic-transfer",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "C:\\Users\\ARASH\\sonic-transfer\\.output\\public", "-p", "3000"],
       "port": 3000
     }
   ]
