@@ -23,7 +23,7 @@ describe('Final Acoustic Round-Trip Verification Test', () => {
     const originalHash = sha256(originalBytes)
 
     // Fountain encode
-    const encoder = createEncoder(originalBytes, 128, false)
+    const encoder = createEncoder(originalBytes, 128, true)
     const fountainGen = encoder.fountain()
 
     // Modem setup
