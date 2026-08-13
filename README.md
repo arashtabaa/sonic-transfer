@@ -20,9 +20,7 @@
   <img src="https://img.shields.io/badge/Tests-Passing-brightgreen" alt="Tests">
 </p>
 
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Sonic Waveform Divider">
-</p>
+---
 
 ## Overview
 
@@ -37,9 +35,7 @@ Sonic Transfer enables two nearby devices (laptops, desktops, smartphones) to tr
 
 The sender converts binary data into acoustic audio signals played over the speaker. The receiver listens through its microphone, demodulates the acoustic frames, verifies packet integrity via CRC32, reconstructs the file using Fountain codes, and presents the file for download.
 
-<p align="center">
-  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
-</p>
+---
 
 ## Quick Test (Two Devices)
 
@@ -52,9 +48,7 @@ To test file transfer between two devices:
 5. Place the two devices near each other (~10–50 cm).
 6. Click **Start Transmission** on Device A.
 
-<p align="center">
-  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
-</p>
+---
 
 ## Core Concept & Architecture
 
@@ -92,9 +86,7 @@ Original File Reconstruction & Checksum Validation
 User Blob Download
 ```
 
-<p align="center">
-  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
-</p>
+---
 
 ## Verification Status
 
@@ -115,9 +107,7 @@ We maintain strict and honest technical claims about the verification state of e
 - **Over-the-Air Physical Matrix**: Physical speaker-to-microphone over-the-air transfer bitrates across all hardware/browser matrix combinations are pending field measurement.
 - **Universal Ultrasonic Support**: Ultrasonic frequency response (>18 kHz) depends on physical speaker/microphone hardware capabilities.
 
-<p align="center">
-  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
-</p>
+---
 
 ## Verified Synthetic Benchmark Results
 
@@ -135,9 +125,7 @@ Exact Byte Equality:   PASS (100% Identical)
 ```
 *(Note: Synthetic benchmark results do not represent physical over-the-air performance).*
 
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
-</p>
+---
 
 ## Frequency Profiles
 
@@ -151,9 +139,7 @@ Exact Byte Equality:   PASS (100% Identical)
 | **Ultrasonic** | Hardware-dependent | 18.0 kHz – 22.5 kHz | Experimental |
 | **Custom** | Expert tuning | User-configured | Implemented |
 
-<p align="center">
-  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
-</p>
+---
 
 ## Why Fountain Codes?
 
@@ -161,9 +147,7 @@ Acoustic audio channels are inherently lossy and subject to ambient noise, refle
 
 Instead of requiring retransmission of lost packets via network handshakes, Sonic Transfer uses **Luby Transform (Fountain Codes)**. The sender continuously broadcasts random XOR combinations of original file blocks. The receiver collects any valid blocks (in any order) until it has enough data to reconstruct the exact original file.
 
-<p align="center">
-  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
-</p>
+---
 
 ## Privacy & Security
 
@@ -171,9 +155,7 @@ Instead of requiring retransmission of lost packets via network handshakes, Soni
 - **No Cloud Upload**: File data is never sent to any server or cloud service.
 - **Untrusted Input Handling**: Received files are treated strictly as untrusted binary blobs and are never automatically executed or evaluated.
 
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
-</p>
+---
 
 ## Developer Quick Start
 
@@ -205,9 +187,7 @@ pnpm generate
 
 The production static build is generated in `.output/public/`.
 
-<p align="center">
-  <img src="docs/assets/dividers/spectrum-divider.svg" width="100%" alt="Spectrum Divider">
-</p>
+---
 
 ## One-Click Windows Launcher
 
@@ -217,9 +197,7 @@ For offline local usage on Windows:
 2. Double-click `start.bat` (or run `./start.ps1` in PowerShell).
 3. The script will automatically build static assets if needed, start a local HTTP server, and open your browser at `http://localhost:3000`.
 
-<p align="center">
-  <img src="docs/assets/dividers/circuit-divider.svg" width="100%" alt="Circuit Divider">
-</p>
+---
 
 ## Documentation
 
@@ -230,9 +208,7 @@ Detailed architectural and technical specifications are available in the `docs/`
 - [Modem Architecture & Profiles](docs/modem.md)
 - [Testing & Benchmarking Guide](docs/testing.md)
 
-<p align="center">
-  <img src="docs/assets/dividers/waveform-divider.svg" width="100%" alt="Waveform Divider">
-</p>
+---
 
 ## Inspiration & Attribution
 
@@ -246,8 +222,6 @@ Sonic Transfer is open-source software licensed under the [MIT License](LICENSE)
 ---
 
 <p align="center">
-  <img src="docs/assets/dividers/pulse-icon.svg" width="24px" height="24px" alt="Pulse Icon">
-  <br>
   <strong>Sonic Transfer</strong> — <em>Sound carries the data.</em>
   <br>
   Built and maintained by <a href="https://github.com/arashtabaa"><strong>arashtabaa</strong></a>
