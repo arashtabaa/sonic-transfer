@@ -1,17 +1,11 @@
 <script setup lang="ts">
 import { ModemProfileKey } from '~/acoustic'
-import { AcousticLinkTester } from '~/acoustic/transport/link-test'
-import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
 
 const inputDevices = ref<MediaDeviceInfo[]>([])
 const outputDevices = ref<MediaDeviceInfo[]>([])
-
-const linkTestRunning = ref(false)
-const linkTestMessage = ref<string | null>(null)
-const isTestFileRunning = ref(false)
 
 onMounted(async () => {
   if (navigator.mediaDevices?.enumerateDevices) {
@@ -21,45 +15,10 @@ onMounted(async () => {
   }
 })
 
-async function runAcousticLinkCheck() {
-  if (linkTestRunning.value) return
-  linkTestRunning.value = true
-  store.sessionStep = SessionStep.VERIFYING_LINK
-  linkTestMessage.value = 'Broadcasting preflight LINK_PROBE frame...'
-
-  const nonce = Math.floor(Math.random() * 1000000)
-  const probeFrame = AcousticLinkTester.createProbeFrame(12345, nonce)
-
-  // Start short transmission
-  await store.startTransmission(probeFrame, 'link-probe.bin', 'application/octet-stream')
-
-  setTimeout(() => {
-    store.stopTransmission()
-    linkTestRunning.value = false
-    store.sessionStep = SessionStep.LINK_VERIFIED
-    linkTestMessage.value = 'Preflight probe broadcast complete. Link verified!'
-  }, 2000)
-}
-
-async function runTestFileTransfer() {
-  if (isTestFileRunning.value) return
-  isTestFileRunning.value = true
-  store.sessionStep = SessionStep.TEST_TRANSFERRING
-
-  const testPayload = generateTestPayload()
-  await store.startTransmission(testPayload, 'sonic-test-fixture.bin', 'application/octet-stream')
-
-  setTimeout(() => {
-    store.stopTransmission()
-    isTestFileRunning.value = false
-    store.sessionStep = SessionStep.TEST_TRANSFER_VERIFIED
-  }, 3000)
-}
-
 async function onFileSelected(file?: File) {
   if (!file) return
   const buffer = await file.arrayBuffer()
-  store.setFile(new Uint8Array(buffer), file.name, file.type || 'application/octet-stream')
+  await store.setFile(new Uint8Array(buffer), file.name, file.type || 'application/octet-stream')
 }
 
 async function startRealFileTransfer() {
@@ -74,7 +33,7 @@ async function startRealFileTransfer() {
     <!-- Header -->
     <div class="border-b border-neutral-800 pb-3">
       <h2 class="text-xl font-bold text-neutral-100">Sonic Transfer Sender</h2>
-      <p class="text-xs text-neutral-400">Verify acoustic link and preflight before selecting real files</p>
+      <p class="text-xs text-neutral-400">Verify acoustic link and test transfer before selecting real files</p>
     </div>
 
     <!-- Step 1: Acoustic Link Verification Card -->
@@ -120,11 +79,11 @@ async function startRealFileTransfer() {
       <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
         <button
           class="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white transition hover:bg-blue-500 shadow-md active:scale-95 disabled:opacity-50"
-          :disabled="linkTestRunning"
-          @click="runAcousticLinkCheck"
+          :disabled="store.sessionStep === SessionStep.VERIFYING_LINK"
+          @click="store.runAcousticLinkCheck"
         >
           <span class="i-carbon-connection-signal text-sm" />
-          {{ linkTestRunning ? 'Verifying Link...' : 'Verify Acoustic Link' }}
+          {{ store.sessionStep === SessionStep.VERIFYING_LINK ? 'Verifying Link...' : 'Verify Acoustic Link' }}
         </button>
 
         <button
@@ -135,8 +94,8 @@ async function startRealFileTransfer() {
         </button>
       </div>
 
-      <div v-if="linkTestMessage" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
-        {{ linkTestMessage }}
+      <div v-if="store.linkCheckMessage" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
+        {{ store.linkCheckMessage }}
       </div>
     </div>
 
@@ -158,11 +117,11 @@ async function startRealFileTransfer() {
         <button
           class="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold text-white transition shadow-md active:scale-95 disabled:opacity-40 cursor-pointer"
           :class="store.sessionStep === SessionStep.TEST_TRANSFERRING ? 'bg-amber-600 hover:bg-amber-500' : 'bg-purple-600 hover:bg-purple-500'"
-          :disabled="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK || isTestFileRunning"
-          @click="runTestFileTransfer"
+          :disabled="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK || store.sessionStep === SessionStep.TEST_TRANSFERRING"
+          @click="store.runTestFileTransfer"
         >
           <span class="i-carbon-play-filled-alt text-sm" />
-          {{ isTestFileRunning ? 'Running Test Transfer...' : 'Run Test Transfer' }}
+          {{ store.sessionStep === SessionStep.TEST_TRANSFERRING ? 'Running Test Transfer...' : 'Run Test Transfer' }}
         </button>
 
         <span v-if="store.sessionStep === SessionStep.TEST_TRANSFER_VERIFIED" class="text-xs text-emerald-400 font-bold font-mono flex items-center gap-1">

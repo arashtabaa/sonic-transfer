@@ -35,6 +35,7 @@ export interface SessionHeaderPayload {
   originalSize: number
   encodedSize: number
   fileChecksum: number
+  sha256Hex?: string
   totalFountainK: number
   modemProfile: string
 }

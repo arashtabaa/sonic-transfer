@@ -104,10 +104,30 @@ async function toggleReceive() {
 
       <!-- Download Result Card -->
       <div v-if="store.downloadUrl" class="rounded-xl border border-emerald-500/40 bg-emerald-950/20 p-4 flex flex-col gap-3">
-        <div class="flex items-center gap-2 text-emerald-400 font-bold text-sm font-sans">
-          <span class="i-carbon-checkmark-filled text-lg" />
-          File Reconstructed & SHA-256 Verified!
+        <div class="flex items-center justify-between font-sans">
+          <div class="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+            <span class="i-carbon-checkmark-filled text-lg" />
+            File Reconstructed & SHA-256 Verified!
+          </div>
+          <span
+            class="text-xs font-mono font-bold px-2 py-0.5 rounded"
+            :class="store.isIntegrityVerified ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/30' : 'bg-red-950 text-red-400 border border-red-500/30'"
+          >
+            {{ store.isIntegrityVerified ? 'SHA-256 MATCH' : 'MISMATCH' }}
+          </span>
         </div>
+
+        <div class="rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs flex flex-col gap-1">
+          <div class="flex justify-between min-w-0">
+            <span class="text-neutral-500 font-sans">Expected SHA-256:</span>
+            <span class="text-neutral-300 truncate max-w-56">{{ store.expectedSha256 || 'N/A' }}</span>
+          </div>
+          <div class="flex justify-between min-w-0">
+            <span class="text-neutral-500 font-sans">Received SHA-256:</span>
+            <span class="text-emerald-400 truncate max-w-56">{{ store.receivedSha256 || 'N/A' }}</span>
+          </div>
+        </div>
+
         <div class="flex items-center justify-between font-mono text-xs text-neutral-300 min-w-0">
           <span class="truncate max-w-64" :title="store.downloadedFilename!">{{ store.downloadedFilename }}</span>
           <span class="text-neutral-500">{{ store.downloadedContentType }}</span>
