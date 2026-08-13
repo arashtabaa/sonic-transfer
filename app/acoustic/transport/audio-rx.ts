@@ -14,12 +14,18 @@ export interface AudioDiagnosticsInfo {
   audioWorkletActive: boolean
 }
 
+function getWorkletPath(filename: string): string {
+  const baseURL = (typeof window !== 'undefined' && (window as any).__NUXT__?.config?.app?.baseURL) || '/'
+  const cleanBase = baseURL.endsWith('/') ? baseURL : `${baseURL}/`
+  return `${cleanBase}${filename.replace(/^\//, '')}`
+}
+
 export class AudioReceiver {
   private audioContext: AudioContext | null = null
   private mediaStream: MediaStream | null = null
   private mediaStreamSource: MediaStreamAudioSourceNode | null = null
   private audioWorkletNode: AudioWorkletNode | null = null
-  private scriptProcessorNode: ScriptProcessorNode | null = null // Fallback
+  private scriptProcessorNode: ScriptProcessorNode | null = null
   private onAudioDataCallback: (samples: Float32Array) => void
   private isListening = false
   private diagnostics: AudioDiagnosticsInfo | null = null
@@ -28,12 +34,15 @@ export class AudioReceiver {
     this.onAudioDataCallback = options.onAudioData
   }
 
+  public setOnAudioDataCallback(fn: (samples: Float32Array) => void): void {
+    this.onAudioDataCallback = fn
+  }
+
   public async start(deviceId?: string): Promise<AudioDiagnosticsInfo> {
     if (this.isListening) {
       return this.diagnostics!
     }
 
-    // 1. Request microphone input with processing disabled where supported
     const constraints: MediaStreamConstraints = {
       audio: {
         echoCancellation: false,
@@ -49,14 +58,12 @@ export class AudioReceiver {
       this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints)
     } catch (e) {
       console.warn('Failed to get mediaStream with disabled processing constraints, retrying basic constraints', e)
-      // Fallback to basic audio constraint if strict ones fail
       this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
     }
 
     const audioTrack = this.mediaStream.getAudioTracks()[0]!
     const trackSettings = audioTrack.getSettings()
 
-    // 2. Setup AudioContext
     const requestedSampleRate = trackSettings.sampleRate || 48000
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: requestedSampleRate })
 
@@ -67,9 +74,10 @@ export class AudioReceiver {
     this.mediaStreamSource = this.audioContext.createMediaStreamSource(this.mediaStream)
 
     let workletActive = false
+    const workletPath = getWorkletPath('acoustic-rx-worklet.js')
+
     try {
-      // 3. Prefer AudioWorklet for real-time capture
-      await this.audioContext.audioWorklet.addModule('/acoustic-rx-worklet.js')
+      await this.audioContext.audioWorklet.addModule(workletPath)
       this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'acoustic-rx-worklet')
       this.audioWorkletNode.port.onmessage = (event) => {
         if (event.data.type === 'audio_samples') {
@@ -78,12 +86,9 @@ export class AudioReceiver {
         }
       }
       this.mediaStreamSource.connect(this.audioWorkletNode)
-      // AudioWorkletNode does not need to connect to destination if we only process input
       workletActive = true
-      console.log('AudioWorklet-based receiver started.')
     } catch (e) {
-      console.warn('AudioWorklet for receiver failed, using ScriptProcessorNode fallback', e)
-      // 4. Fallback to ScriptProcessorNode
+      console.warn(`AudioWorklet (${workletPath}) failed, using ScriptProcessorNode fallback`, e)
       const bufferSize = 2048
       this.scriptProcessorNode = this.audioContext.createScriptProcessor(bufferSize, 1, 1)
       this.scriptProcessorNode.onaudioprocess = (event) => {
@@ -93,7 +98,6 @@ export class AudioReceiver {
         this.onAudioDataCallback(samples)
       }
       this.mediaStreamSource.connect(this.scriptProcessorNode)
-      // ScriptProcessorNode needs connection to destination to work in some browsers
       this.scriptProcessorNode.connect(this.audioContext.destination)
     }
 
@@ -142,8 +146,6 @@ export class AudioReceiver {
       this.audioContext.close()
       this.audioContext = null
     }
-
-    console.log('Audio receiver stopped.')
   }
 
   public getDiagnostics(): AudioDiagnosticsInfo | null {

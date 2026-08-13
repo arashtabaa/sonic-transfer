@@ -2,7 +2,7 @@ export interface LiveTransferStats {
   rawBitrateBps: number
   payloadBitrateBps: number
   validPayloadBitrateBps: number
-  snrDb: number
+  snrDb: number | null
   packetsReceived: number
   validPackets: number
   invalidPackets: number
@@ -24,7 +24,7 @@ export class MetricsCollector {
   private invalidPackets = 0
   private totalFountainK = 0
   private decodedFountainCount = 0
-  private lastSnrDb = 0
+  private lastSnrDb: number | null = null
 
   public start(): void {
     this.startTime = performance.now()
@@ -35,10 +35,10 @@ export class MetricsCollector {
     this.validPackets = 0
     this.invalidPackets = 0
     this.decodedFountainCount = 0
-    this.lastSnrDb = 0
+    this.lastSnrDb = null
   }
 
-  public recordPacket(bytes: number, isValid: boolean, snrDb = 0): void {
+  public recordPacket(bytes: number, isValid: boolean, snrDb: number | null = null): void {
     this.packetsReceived++
     this.lastSnrDb = snrDb
     this.totalBytesReceived += bytes

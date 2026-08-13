@@ -51,8 +51,8 @@ async function toggleReceive() {
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-xs">
           <div class="flex flex-col">
             <span class="text-neutral-500 text-10px font-sans uppercase">Signal SNR</span>
-            <span class="font-bold tabular-nums" :class="store.liveStats.snrDb > 0 && store.isListening ? 'text-blue-400' : 'text-neutral-500'">
-              {{ (store.liveStats.snrDb > 0 && store.isListening) ? `${store.liveStats.snrDb.toFixed(1)} dB` : 'N/A' }}
+            <span class="font-bold tabular-nums" :class="store.liveStats.snrDb !== null && store.isListening ? 'text-blue-400' : 'text-neutral-500'">
+              {{ (store.liveStats.snrDb !== null && store.isListening) ? `${store.liveStats.snrDb.toFixed(1)} dB` : 'N/A' }}
             </span>
           </div>
           <div class="flex flex-col">
