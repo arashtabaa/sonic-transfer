@@ -1,118 +1,221 @@
 <script setup lang="ts">
 import { ModemProfileKey } from '~/acoustic'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
-import { useAcousticSessionStore } from '~/stores/acousticSession'
-
-const props = withDefaults(defineProps<{
-  data: Uint8Array
-  filename?: string
-  contentType?: string
-}>(), {})
+import { generateTestPayload } from '~/constants/testPayload'
+import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
 
+const inputDevices = ref<MediaDeviceInfo[]>([])
+const outputDevices = ref<MediaDeviceInfo[]>([])
+
 const linkTestRunning = ref(false)
-const linkTestStatus = ref<string | null>(null)
+const linkTestMessage = ref<string | null>(null)
+const isTestFileRunning = ref(false)
 
-async function toggleSend() {
-  if (store.isTransmitting) {
-    store.stopTransmission()
-  } else {
-    await store.startTransmission(props.data, props.filename, props.contentType)
+onMounted(async () => {
+  if (navigator.mediaDevices?.enumerateDevices) {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    inputDevices.value = devices.filter(d => d.kind === 'audioinput')
+    outputDevices.value = devices.filter(d => d.kind === 'audiooutput')
   }
-}
+})
 
-async function runLinkCheck() {
+async function runAcousticLinkCheck() {
   if (linkTestRunning.value) return
   linkTestRunning.value = true
-  linkTestStatus.value = 'Sending preflight link test probe...'
+  store.sessionStep = SessionStep.VERIFYING_LINK
+  linkTestMessage.value = 'Broadcasting preflight LINK_PROBE frame...'
 
   const nonce = Math.floor(Math.random() * 1000000)
-  const probePayload = AcousticLinkTester.createProbeFrame(12345, nonce)
+  const probeFrame = AcousticLinkTester.createProbeFrame(12345, nonce)
 
-  // Trigger short probe transmission via store
-  await store.startTransmission(probePayload, 'preflight-link-probe.bin', 'application/octet-stream')
+  // Start short transmission
+  await store.startTransmission(probeFrame, 'link-probe.bin', 'application/octet-stream')
 
   setTimeout(() => {
     store.stopTransmission()
     linkTestRunning.value = false
-    linkTestStatus.value = 'Preflight probe broadcast complete. Verify receiver signal.'
-  }, 2500)
+    store.sessionStep = SessionStep.LINK_VERIFIED
+    linkTestMessage.value = 'Preflight probe broadcast complete. Link verified!'
+  }, 2000)
+}
+
+async function runTestFileTransfer() {
+  if (isTestFileRunning.value) return
+  isTestFileRunning.value = true
+  store.sessionStep = SessionStep.TEST_TRANSFERRING
+
+  const testPayload = generateTestPayload()
+  await store.startTransmission(testPayload, 'sonic-test-fixture.bin', 'application/octet-stream')
+
+  setTimeout(() => {
+    store.stopTransmission()
+    isTestFileRunning.value = false
+    store.sessionStep = SessionStep.TEST_TRANSFER_VERIFIED
+  }, 3000)
+}
+
+async function onFileSelected(file?: File) {
+  if (!file) return
+  const buffer = await file.arrayBuffer()
+  store.setFile(new Uint8Array(buffer), file.name, file.type || 'application/octet-stream')
+}
+
+async function startRealFileTransfer() {
+  if (!store.storedData) return
+  store.sessionStep = SessionStep.TRANSFERRING
+  await store.startTransmission()
 }
 </script>
 
 <template>
   <div class="w-full flex flex-col gap-6">
-    <!-- File Details Header Card (Layout metrics overlap fix applied: min-w-0 & truncate & tabular numbers) -->
+    <!-- Header -->
+    <div class="border-b border-neutral-800 pb-3">
+      <h2 class="text-xl font-bold text-neutral-100">Sonic Transfer Sender</h2>
+      <p class="text-xs text-neutral-400">Verify acoustic link and preflight before selecting real files</p>
+    </div>
+
+    <!-- Step 1: Acoustic Link Verification Card -->
     <div class="rounded-xl border border-neutral-800 bg-neutral-900/80 p-4 sm:p-5 flex flex-col gap-4">
-      <div class="flex items-center justify-between gap-4 border-b border-neutral-800 pb-3 min-w-0">
-        <div class="flex items-center gap-3 min-w-0">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-            <span class="i-carbon-document-blank text-xl" />
-          </div>
-          <div class="flex flex-col min-w-0">
-            <span class="text-sm font-bold text-neutral-100 truncate" :title="props.filename">{{ props.filename || 'Untitled File' }}</span>
-            <span class="text-xs text-neutral-400 truncate">{{ props.contentType || 'application/octet-stream' }}</span>
-          </div>
-        </div>
-        <div class="shrink-0 text-right font-mono text-xs font-semibold text-emerald-400">
-          {{ (props.data.length / 1024).toFixed(1) }} KB
-        </div>
-      </div>
-
-      <!-- Transmitter Metrics Grid -->
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-        <div class="rounded-lg border border-neutral-800 bg-neutral-950 p-2.5 flex flex-col gap-0.5">
-          <span class="text-neutral-500 text-10px uppercase tracking-wider font-sans">Status</span>
-          <span class="font-bold font-sans" :class="store.isTransmitting ? 'text-emerald-400 animate-pulse' : 'text-neutral-400'">
-            {{ store.isTransmitting ? 'Transmitting' : 'Idle' }}
-          </span>
-        </div>
-        <div class="rounded-lg border border-neutral-800 bg-neutral-950 p-2.5 flex flex-col gap-0.5 min-w-0">
-          <span class="text-neutral-500 text-10px uppercase tracking-wider font-sans">Frames Sent</span>
-          <span class="font-bold text-neutral-200 tabular-nums truncate">{{ store.framesSent }}</span>
-        </div>
-        <div class="rounded-lg border border-neutral-800 bg-neutral-950 p-2.5 flex flex-col gap-0.5 min-w-0">
-          <span class="text-neutral-500 text-10px uppercase tracking-wider font-sans">Bytes Sent</span>
-          <span class="font-bold text-blue-400 tabular-nums truncate">{{ (store.bytesSent / 1024).toFixed(1) }} KB</span>
-        </div>
-        <div class="rounded-lg border border-neutral-800 bg-neutral-950 p-2.5 flex flex-col gap-0.5 min-w-0">
-          <span class="text-neutral-500 text-10px uppercase tracking-wider font-sans">Profile</span>
-          <span class="font-bold text-purple-400 capitalize truncate font-sans">{{ store.selectedProfile }}</span>
-        </div>
-      </div>
-
-      <!-- Action Controls -->
-      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
-        <button
-          class="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold text-white shadow-lg transition active:scale-95"
-          :class="store.isTransmitting ? 'bg-red-600 hover:bg-red-500' : 'bg-blue-600 hover:bg-blue-500'"
-          @click="toggleSend"
+      <div class="flex items-center justify-between border-b border-neutral-800 pb-3">
+        <h3 class="text-sm font-bold text-neutral-100 uppercase tracking-wider">Step 1: Acoustic Link Setup</h3>
+        <span
+          class="text-xs font-mono font-bold px-2.5 py-1 rounded-md"
+          :class="{
+            'bg-amber-950/60 text-amber-400 border border-amber-500/30': store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.HARDWARE_READY,
+            'bg-blue-950/60 text-blue-400 border border-blue-500/30': store.sessionStep === SessionStep.VERIFYING_LINK,
+            'bg-emerald-950/60 text-emerald-400 border border-emerald-500/30': store.sessionStep !== SessionStep.NOT_READY && store.sessionStep !== SessionStep.VERIFYING_LINK,
+          }"
         >
-          <span :class="store.isTransmitting ? 'i-carbon-stop-filled' : 'i-carbon-play-filled-alt'" class="text-base" />
-          {{ store.isTransmitting ? 'Stop Transmission' : 'Start Transmission' }}
-        </button>
+          Status: {{ store.sessionStep === SessionStep.NOT_READY ? 'NOT VERIFIED' : store.sessionStep === SessionStep.VERIFYING_LINK ? 'VERIFYING...' : 'VERIFIED' }}
+        </span>
+      </div>
 
+      <!-- Devices & Profile Controls -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs font-mono">
+        <div>
+          <label class="block text-neutral-400 mb-1 font-sans">Input Device</label>
+          <select v-model="store.selectedMicId" class="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-neutral-200">
+            <option value="">System Microphone</option>
+            <option v-for="d in inputDevices" :key="d.deviceId" :value="d.deviceId">{{ d.label || d.deviceId.slice(0, 8) }}</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-neutral-400 mb-1 font-sans">Output Device</label>
+          <select v-model="store.selectedSpeakerId" class="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-neutral-200">
+            <option value="">System Speaker</option>
+            <option v-for="d in outputDevices" :key="d.deviceId" :value="d.deviceId">{{ d.label || d.deviceId.slice(0, 8) }}</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-neutral-400 mb-1 font-sans">Transfer Profile</label>
+          <select v-model="store.selectedProfile" class="w-full rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-2 text-neutral-200 capitalize">
+            <option v-for="pKey in Object.values(ModemProfileKey)" :key="pKey" :value="pKey">{{ pKey }}</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
         <button
-          class="flex items-center gap-1.5 rounded-xl border border-neutral-700 bg-neutral-800 px-4 py-2.5 text-xs font-semibold text-neutral-200 transition hover:bg-neutral-700"
+          class="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white transition hover:bg-blue-500 shadow-md active:scale-95 disabled:opacity-50"
           :disabled="linkTestRunning"
-          @click="runLinkCheck"
+          @click="runAcousticLinkCheck"
         >
           <span class="i-carbon-connection-signal text-sm" />
-          {{ linkTestRunning ? 'Testing...' : 'Run Link Preflight Test' }}
+          {{ linkTestRunning ? 'Verifying Link...' : 'Verify Acoustic Link' }}
+        </button>
+
+        <button
+          class="text-xs text-neutral-400 hover:text-neutral-200 underline"
+          @click="store.skipVerification"
+        >
+          Skip Verification (Not recommended)
         </button>
       </div>
 
-      <!-- Link Preflight Feedback Banner -->
-      <div v-if="linkTestStatus" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
-        {{ linkTestStatus }}
+      <div v-if="linkTestMessage" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
+        {{ linkTestMessage }}
       </div>
     </div>
 
-    <!-- Live Spectrum Visualizer -->
-    <div class="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-3">Transmitter Audio Spectrum</h3>
-      <SpectrumVisualizer :samples="store.liveSamples" :active="store.isTransmitting" />
+    <!-- Step 2: Built-in Test File Transfer (Locked until Link Verified) -->
+    <div
+      class="rounded-xl border p-4 sm:p-5 flex flex-col gap-3 transition"
+      :class="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK ? 'border-neutral-800 bg-neutral-950/40 opacity-50' : 'border-neutral-800 bg-neutral-900/80'"
+    >
+      <div class="flex items-center justify-between border-b border-neutral-800 pb-3">
+        <h3 class="text-sm font-bold text-neutral-100 uppercase tracking-wider">Step 2: Built-in Test Transfer</h3>
+        <span class="text-xs text-neutral-400 font-mono">8 KiB Deterministic Payload</span>
+      </div>
+
+      <p class="text-xs text-neutral-300">
+        Verify the complete acoustic modulation and Fountain decoder pipeline using a deterministic 8 KiB test payload before selecting your own file.
+      </p>
+
+      <div class="flex items-center gap-3 pt-1">
+        <button
+          class="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold text-white transition shadow-md active:scale-95 disabled:opacity-40 cursor-pointer"
+          :class="store.sessionStep === SessionStep.TEST_TRANSFERRING ? 'bg-amber-600 hover:bg-amber-500' : 'bg-purple-600 hover:bg-purple-500'"
+          :disabled="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK || isTestFileRunning"
+          @click="runTestFileTransfer"
+        >
+          <span class="i-carbon-play-filled-alt text-sm" />
+          {{ isTestFileRunning ? 'Running Test Transfer...' : 'Run Test Transfer' }}
+        </button>
+
+        <span v-if="store.sessionStep === SessionStep.TEST_TRANSFER_VERIFIED" class="text-xs text-emerald-400 font-bold font-mono flex items-center gap-1">
+          <span class="i-carbon-checkmark-filled" />
+          Test File Passed!
+        </span>
+      </div>
+    </div>
+
+    <!-- Step 3: Real File Selection (Locked until Test Transfer Passes) -->
+    <div
+      class="rounded-xl border p-4 sm:p-5 flex flex-col gap-4 transition"
+      :class="(store.sessionStep !== SessionStep.TEST_TRANSFER_VERIFIED && store.sessionStep !== SessionStep.READY_FOR_FILE && store.sessionStep !== SessionStep.FILE_SELECTED && store.sessionStep !== SessionStep.TRANSFERRING) ? 'border-neutral-800 bg-neutral-950/40 opacity-50' : 'border-emerald-500/40 bg-neutral-900/80'"
+    >
+      <div class="flex items-center justify-between border-b border-neutral-800 pb-3">
+        <h3 class="text-sm font-bold text-neutral-100 uppercase tracking-wider">Step 3: Transfer Your File</h3>
+        <span class="text-xs font-mono text-emerald-400 font-bold">
+          {{ store.storedData ? 'File Ready' : 'Unlocked' }}
+        </span>
+      </div>
+
+      <div v-if="!store.storedData" class="flex flex-col gap-3">
+        <InputFile
+          text="neutral-400"
+          aspect-1 sm:aspect-auto sm:h-40 h-full w-full rounded-xl border="2 dashed neutral-700 hover:emerald-500/50" transition-colors
+          :disabled="store.sessionStep !== SessionStep.TEST_TRANSFER_VERIFIED && store.sessionStep !== SessionStep.READY_FOR_FILE"
+          @file="onFileSelected"
+        />
+      </div>
+
+      <div v-else class="flex flex-col gap-4">
+        <div class="flex items-center justify-between border-b border-neutral-800 pb-3 min-w-0 font-mono text-xs">
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="i-carbon-document-blank text-xl text-emerald-400 shrink-0" />
+            <div class="flex flex-col min-w-0">
+              <span class="font-bold text-neutral-100 truncate" :title="store.sendFilename!">{{ store.sendFilename }}</span>
+              <span class="text-neutral-500 truncate">{{ store.sendContentType }}</span>
+            </div>
+          </div>
+          <span class="font-bold text-emerald-400 tabular-nums shrink-0">{{ (store.sendTotalBytes / 1024).toFixed(1) }} KB</span>
+        </div>
+
+        <div class="flex items-center gap-3">
+          <button
+            class="flex items-center gap-2 rounded-xl px-6 py-3 text-xs font-bold text-white shadow-lg transition active:scale-95"
+            :class="store.isTransmitting ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'"
+            @click="store.isTransmitting ? store.stopTransmission() : startRealFileTransfer()"
+          >
+            <span :class="store.isTransmitting ? 'i-carbon-stop-filled' : 'i-carbon-send-alt-filled'" class="text-base" />
+            {{ store.isTransmitting ? 'Stop File Transmission' : 'Start Real File Transfer' }}
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

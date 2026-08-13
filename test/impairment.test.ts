@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
+  AcousticFrameType,
   AcousticPacketizer,
   BFSKAcousticModem,
   getProfileConfig,
@@ -54,7 +55,7 @@ describe('Acoustic Channel Impairment & Synthetic Robustness Suite', () => {
       const decodedPackets = modem.decode(samples)
       for (const pktBuffer of decodedPackets) {
         const parsed = packetizer.parseIncomingBuffer(pktBuffer)
-        if (parsed.frame && parsed.frame.frameType === 0x11 /* DATA */) {
+        if (parsed.frame && parsed.frame.frameType === AcousticFrameType.DATA) {
           const { binaryToBlock } = await import('../packages/luby-transform/src')
           const recBlock = binaryToBlock(parsed.frame.payload)
           if (decoder.addBlock(recBlock)) {

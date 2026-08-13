@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeFrame } from '../app/acoustic/protocol/frame'
+import { AcousticFrameType, decodeFrame } from '../app/acoustic/protocol/frame'
 import { AcousticLinkTester } from '../app/acoustic/transport/link-test'
 
 describe('Acoustic Link Tester Preflight', () => {
@@ -12,7 +12,7 @@ describe('Acoustic Link Tester Preflight', () => {
 
     expect(decoded).not.toBeNull()
     expect(decoded?.sessionId).toBe(sessionId)
-    expect(decoded?.frameType).toBe(0x02 /* LINK_PROBE */)
+    expect(decoded?.frameType).toBe(AcousticFrameType.LINK_PROBE)
 
     const parsed = AcousticLinkTester.parseProbePayload(decoded!.payload)
     expect(parsed?.nonce).toBe(nonce)
@@ -27,7 +27,7 @@ describe('Acoustic Link Tester Preflight', () => {
     const decoded = decodeFrame(frameBytes)
 
     expect(decoded).not.toBeNull()
-    expect(decoded?.frameType).toBe(0x03 /* LINK_ACK */)
+    expect(decoded?.frameType).toBe(AcousticFrameType.LINK_ACK)
 
     const parsed = AcousticLinkTester.parseAckPayload(decoded!.payload)
     expect(parsed?.nonce).toBe(nonce)

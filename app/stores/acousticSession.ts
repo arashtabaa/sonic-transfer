@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { readFileHeaderMetaFromBuffer } from 'luby-transform'
 import {
+  AcousticFrameType,
   AcousticPacketizer,
   AudioReceiver,
   AudioTransmitter,
@@ -13,6 +14,32 @@ import {
   type SessionHeaderPayload,
 } from '~/acoustic'
 import { createLTDecodeWorker } from '~/composables/lt-decode'
+import { generateTestPayload } from '~/constants/testPayload'
+
+export enum SessionStep {
+  NOT_READY = 'NOT_READY',
+  HARDWARE_READY = 'HARDWARE_READY',
+  VERIFYING_LINK = 'VERIFYING_LINK',
+  LINK_VERIFIED = 'LINK_VERIFIED',
+  TEST_TRANSFERRING = 'TEST_TRANSFERRING',
+  TEST_TRANSFER_VERIFIED = 'TEST_TRANSFER_VERIFIED',
+  READY_FOR_FILE = 'READY_FOR_FILE',
+  FILE_SELECTED = 'FILE_SELECTED',
+  TRANSFERRING = 'TRANSFERRING',
+  COMPLETE = 'COMPLETE',
+}
+
+export type DspStage =
+  | 'MICROPHONE_READY'
+  | 'MEASURING_NOISE'
+  | 'SEARCHING_FOR_SIGNAL'
+  | 'CARRIER_LOCKED'
+  | 'PREAMBLE_DETECTED'
+  | 'FRAME_RECEIVING'
+  | 'CRC_VALID'
+  | 'FOUNTAIN_BLOCK_ACCEPTED'
+  | 'RECONSTRUCTING'
+  | 'COMPLETE'
 
 export const useAcousticSessionStore = defineStore('acousticSession', () => {
   // --- Persistent Preferences ---
@@ -22,13 +49,18 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const selectedSpeakerId = useLocalStorage<string>('sonic-speaker-id', '')
   const sliceSize = useLocalStorage<number>('sonic-slice-size', 200)
 
+  // --- Workflow Gating State ---
+  const sessionStep = ref<SessionStep>(SessionStep.NOT_READY)
+  const dspStage = ref<DspStage>('MICROPHONE_READY')
+
   // --- Live Runtime State (Survives SPA Navigation) ---
   const isTransmitting = ref(false)
   const isListening = ref(false)
   const liveSamples = ref<Float32Array | null>(null)
   const activePage = ref<'send' | 'receive' | 'idle'>('idle')
 
-  // Sender Session State
+  // Stored File (Survives SPA Navigation)
+  const storedData = ref<Uint8Array | null>(null)
   const sendFilename = ref<string | null>(null)
   const sendContentType = ref<string | null>(null)
   const sendTotalBytes = ref(0)
@@ -53,8 +85,6 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const metricsCollector = new MetricsCollector()
   const liveStats = ref(metricsCollector.getStats())
   let statsInterval: any = null
-
-  // Wake Lock handle
   let wakeLock: any = null
 
   async function requestWakeLock() {
@@ -62,9 +92,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       if ('wakeLock' in navigator && (navigator as any).wakeLock) {
         wakeLock = await (navigator as any).wakeLock.request('screen')
       }
-    } catch {
-      // Ignored if unsupported
-    }
+    } catch {}
   }
 
   function releaseWakeLock() {
@@ -74,19 +102,34 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
   }
 
-  // --- Sender Controls ---
-  async function startTransmission(data: Uint8Array, filename?: string, contentType?: string) {
+  function setFile(data: Uint8Array, filename: string, contentType: string) {
+    storedData.value = data
+    sendFilename.value = filename
+    sendContentType.value = contentType
+    sendTotalBytes.value = data.length
+    if (sessionStep.value === SessionStep.READY_FOR_FILE || sessionStep.value === SessionStep.TEST_TRANSFER_VERIFIED) {
+      sessionStep.value = SessionStep.FILE_SELECTED
+    }
+  }
+
+  function skipVerification() {
+    sessionStep.value = SessionStep.READY_FOR_FILE
+  }
+
+  // --- Sender Transmission ---
+  async function startTransmission(data?: Uint8Array, filename?: string, contentType?: string) {
     if (isTransmitting.value) return
 
-    sendFilename.value = filename || 'file.bin'
-    sendContentType.value = contentType || 'application/octet-stream'
-    sendTotalBytes.value = data.length
+    const payloadData = data || storedData.value
+    if (!payloadData) return
+
+    sendFilename.value = filename || sendFilename.value || 'file.bin'
+    sendContentType.value = contentType || sendContentType.value || 'application/octet-stream'
+    sendTotalBytes.value = payloadData.length
     framesSent.value = 0
     bytesSent.value = 0
 
-    if (!transmitter) {
-      transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
-    }
+    if (!transmitter) transmitter = new AudioTransmitter({ sampleRate: 48000, gain: outputGain.value })
     if (!packetizer) packetizer = new AcousticPacketizer()
 
     await transmitter.start()
@@ -95,7 +138,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     const modem = new BFSKAcousticModem(config)
 
     const { createEncoder } = await import('luby-transform')
-    const encoder = createEncoder(data, sliceSize.value, true)
+    const encoder = createEncoder(payloadData, sliceSize.value, true)
     const fountain = encoder.fountain()
 
     let sequence = 0
@@ -115,7 +158,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           sessionId,
           filename: sendFilename.value || 'file.bin',
           contentType: sendContentType.value || 'application/octet-stream',
-          originalSize: data.length,
+          originalSize: payloadData.length,
           encodedSize: encoder.compressed.length,
           fileChecksum: encoder.checksum,
           totalFountainK: encoder.k,
@@ -124,7 +167,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       } else {
         const block = fountain.next().value
         const blockBytes = blockToBinary(block)
-        frameBuffer = encodeFrame(sessionId, 2 /* DATA */, sequence, blockBytes)
+        frameBuffer = encodeFrame(sessionId, AcousticFrameType.DATA, sequence, blockBytes)
       }
 
       const audioFrame = modem.encode(frameBuffer)
@@ -145,9 +188,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function stopTransmission() {
     isTransmitting.value = false
-    if (transmitter) {
-      transmitter.stop()
-    }
+    if (transmitter) transmitter.stop()
     releaseWakeLock()
     if (!isListening.value) activePage.value = 'idle'
   }
@@ -167,6 +208,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     fountainK.value = 0
     decodedCount.value = 0
     totalBlocksReceived.value = 0
+    dspStage.value = 'SEARCHING_FOR_SIGNAL'
     metricsCollector.start()
 
     const config = getProfileConfig(selectedProfile.value, 48000)
@@ -176,8 +218,10 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       receiver = new AudioReceiver({
         onAudioData: (samples) => {
           liveSamples.value = samples
-
           const packets = modem.decode(samples)
+          if (packets.length > 0) {
+            dspStage.value = 'CARRIER_LOCKED'
+          }
           for (const packet of packets) {
             processIncomingPacket(packet)
           }
@@ -186,7 +230,6 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     await receiver.start(selectedMicId.value || undefined)
-
     isListening.value = true
     activePage.value = 'receive'
     await requestWakeLock()
@@ -205,25 +248,29 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       return
     }
 
+    dspStage.value = 'CRC_VALID'
     metricsCollector.recordPacket(parsed.frame.payload.length, true)
 
     if (parsed.sessionHeader) {
       receiveHeader.value = parsed.sessionHeader
       fountainK.value = parsed.sessionHeader.totalFountainK
+      dspStage.value = 'FRAME_RECEIVING'
       if (decoderWorker) {
         await decoderWorker.createDecoder()
       }
-    } else if (parsed.frame.frameType === 2 /* DATA */) {
+    } else if (parsed.frame.frameType === AcousticFrameType.DATA) {
       try {
         const { binaryToBlock } = await import('luby-transform')
         const block = binaryToBlock(parsed.frame.payload)
         totalBlocksReceived.value++
+        dspStage.value = 'FOUNTAIN_BLOCK_ACCEPTED'
 
         const success = await decoderWorker.addBlock(block)
         const status = await decoderWorker.getStatus()
         decodedCount.value = status.decodedCount
 
         if (success && !downloadUrl.value) {
+          dspStage.value = 'RECONSTRUCTING'
           const decodedMerged = (await decoderWorker.getDecoded())!
           const [mergedData, meta] = readFileHeaderMetaFromBuffer(decodedMerged)
 
@@ -232,6 +279,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           downloadedFilename.value = meta.filename || 'received-file'
           downloadedContentType.value = meta.contentType
           isIntegrityVerified.value = true
+          dspStage.value = 'COMPLETE'
         }
       } catch (e) {
         console.error('Failed to process Fountain block', e)
@@ -241,9 +289,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function stopListening() {
     isListening.value = false
-    if (receiver) {
-      receiver.stop()
-    }
+    if (receiver) receiver.stop()
     if (statsInterval) {
       clearInterval(statsInterval)
       statsInterval = null
@@ -269,10 +315,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     selectedMicId,
     selectedSpeakerId,
     sliceSize,
+    sessionStep,
+    dspStage,
     isTransmitting,
     isListening,
     liveSamples,
     activePage,
+    storedData,
     sendFilename,
     sendContentType,
     sendTotalBytes,
@@ -287,6 +336,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     downloadedContentType,
     isIntegrityVerified,
     liveStats,
+    setFile,
+    skipVerification,
     startTransmission,
     stopTransmission,
     startListening,
