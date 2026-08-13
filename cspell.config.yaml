@@ -1,0 +1,24 @@
+version: "0.2"
+ignorePaths: []
+dictionaryDefinitions: []
+dictionaries: []
+words:
+  - Attributify
+  - birpc
+  - bumpp
+  - composables
+  - iconify
+  - luby
+  - nuxi
+  - Nuxt
+  - nuxtjs
+  - ohash
+  - pako
+  - pinia
+  - Positionals
+  - Soliton
+  - timeseries
+  - unocss
+  - vueuse
+ignoreWords: []
+import: []
