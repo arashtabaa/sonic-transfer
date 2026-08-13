@@ -8,7 +8,6 @@ interface AudioTxOptions {
 interface QueuedFrameItem {
   frameId: number
   frame: AudioFrame
-  resolve?: () => void
 }
 
 function getWorkletPath(filename: string): string {
@@ -28,7 +27,9 @@ export class AudioTransmitter {
   private isPlaying = false
   private queue: QueuedFrameItem[] = []
   private isBufferSourceActive = false
-  private frameResolvers = new Map<number, () => void>()
+  private workletInFlightFrameIds = new Set<number>()
+  private workletDrained = false
+  private frameResolvers = new Map<number, { resolve: () => void; reject: (reason?: any) => void }>()
   private drainedResolvers: Array<() => void> = []
   private nextFrameId = 1
 
@@ -61,13 +62,20 @@ export class AudioTransmitter {
           this.sendNextFrameToWorklet()
         } else if (event.data.type === 'frame_finished') {
           const frameId = event.data.frameId as number
+          this.workletInFlightFrameIds.delete(frameId)
           const resolver = this.frameResolvers.get(frameId)
           if (resolver) {
             this.frameResolvers.delete(frameId)
-            resolver()
+            resolver.resolve()
+          }
+          if (this.isQueueEmpty()) {
+            this.notifyDrained()
           }
         } else if (event.data.type === 'worklet_drained') {
-          this.notifyDrained()
+          this.workletDrained = true
+          if (this.isQueueEmpty()) {
+            this.notifyDrained()
+          }
         }
       }
       this.isPlaying = true
@@ -86,18 +94,23 @@ export class AudioTransmitter {
     this.isPlaying = false
     this.queue = []
     this.isBufferSourceActive = false
+    this.workletInFlightFrameIds.clear()
+    this.workletDrained = true
 
     if (this.audioWorkletNode) {
       this.audioWorkletNode.disconnect()
       this.audioWorkletNode = null
     }
 
-    this.frameResolvers.forEach(r => r())
+    // Requirement 2: Reject pending promises with explicit TransmissionCancelledError on stop!
+    const err = new Error('TransmissionCancelledError: Playback stopped before frame completed')
+    this.frameResolvers.forEach(r => r.reject(err))
     this.frameResolvers.clear()
     this.notifyDrained()
   }
 
   public enqueueFrame(frame: AudioFrame): number {
+    this.workletDrained = false
     const frameId = this.nextFrameId++
     const item: QueuedFrameItem = { frameId, frame }
     this.queue.push(item)
@@ -114,13 +127,14 @@ export class AudioTransmitter {
 
   public playFrame(frame: AudioFrame): Promise<void> {
     const frameId = this.enqueueFrame(frame)
-    return new Promise((resolve) => {
-      this.frameResolvers.set(frameId, resolve)
+    return new Promise((resolve, reject) => {
+      this.frameResolvers.set(frameId, { resolve, reject })
     })
   }
 
   public isQueueEmpty(): boolean {
-    return this.queue.length === 0 && !this.isBufferSourceActive && this.frameResolvers.size === 0
+    const workletOk = this.audioWorkletNode ? (this.workletInFlightFrameIds.size === 0 && this.workletDrained) : true
+    return this.queue.length === 0 && workletOk && !this.isBufferSourceActive && this.frameResolvers.size === 0
   }
 
   public waitUntilDrained(): Promise<void> {
@@ -149,20 +163,21 @@ export class AudioTransmitter {
 
     if (this.queue.length > 0) {
       const item = this.queue.shift()!
+      this.workletInFlightFrameIds.add(item.frameId)
       this.audioWorkletNode.port.postMessage({
         type: 'play_samples',
         frameId: item.frameId,
         samples: item.frame.samples,
       })
-    } else if (this.queue.length === 0 && this.frameResolvers.size === 0) {
-      this.notifyDrained()
     }
   }
 
   private playBufferSourceQueue(): void {
     if (!this.isPlaying || !this.audioContext || !this.gainNode || this.queue.length === 0) {
       this.isBufferSourceActive = false
-      this.notifyDrained()
+      if (this.isQueueEmpty()) {
+        this.notifyDrained()
+      }
       return
     }
 
@@ -177,11 +192,11 @@ export class AudioTransmitter {
     source.onended = () => {
       this.isBufferSourceActive = false
 
-      // Resolve frame promise on source.onended ONLY!
+      // Requirement 2: Resolve frame promise on source.onended ONLY!
       const resolver = this.frameResolvers.get(item.frameId)
       if (resolver) {
         this.frameResolvers.delete(item.frameId)
-        resolver()
+        resolver.resolve()
       }
 
       if (this.isPlaying && this.queue.length > 0) {

@@ -42,6 +42,14 @@ export interface SessionHeaderPayload {
   modemProfile: string
 }
 
+export interface TestFileStartPayload {
+  protocolVersion: number
+  sessionId: number
+  testTransferId: number
+  payloadSize: number
+  expectedSha256: string
+}
+
 export interface TestFileCompletePayload {
   protocolVersion: number
   sessionId: number
@@ -49,6 +57,20 @@ export interface TestFileCompletePayload {
   expectedSha256: string
   actualSha256: string
   pass: boolean
+}
+
+export function encodeTestFileStart(payload: TestFileStartPayload): Uint8Array {
+  const jsonStr = JSON.stringify(payload)
+  return new TextEncoder().encode(jsonStr)
+}
+
+export function decodeTestFileStart(bytes: Uint8Array): TestFileStartPayload | null {
+  try {
+    const jsonStr = new TextDecoder().decode(bytes)
+    return JSON.parse(jsonStr) as TestFileStartPayload
+  } catch {
+    return null
+  }
 }
 
 export function encodeTestFileComplete(payload: TestFileCompletePayload): Uint8Array {
