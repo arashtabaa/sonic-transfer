@@ -11,6 +11,10 @@ export interface RenderedWaveformResult {
   totalFrames: number
   totalSamples: number
   modemProfile: ModemProfileKey
+  encodedBytes: number
+  protocolBytes: number
+  sourceBlocks: number
+  fountainBlocks: number
 }
 
 export class SonicWaveformRenderer {
@@ -41,6 +45,7 @@ export class SonicWaveformRenderer {
 
     const frames: AudioFrame[] = []
     let totalSamples = 0
+    let protocolBytes = 0
 
     // Generate Session Header + Fountain Data frames
     const headerBytes = packetizer.createSessionHeaderFrame({
@@ -58,6 +63,7 @@ export class SonicWaveformRenderer {
     const headerAudioFrame = modem.encode(headerBytes)
     frames.push(headerAudioFrame)
     totalSamples += headerAudioFrame.samples.length
+    protocolBytes += headerBytes.length
 
     // Redundancy is an explicit renderer parameter, not a test-only multiplier.
     for (let seq = 1; seq <= encoder.k + extraBlocks; seq++) {
@@ -68,6 +74,7 @@ export class SonicWaveformRenderer {
       const audioFrame = modem.encode(dataFrameBuffer)
       frames.push(audioFrame)
       totalSamples += audioFrame.samples.length
+      protocolBytes += dataFrameBuffer.length
     }
 
     // Concatenate all AudioFrames into continuous Float32Array PCM
@@ -85,6 +92,10 @@ export class SonicWaveformRenderer {
       totalFrames: frames.length,
       totalSamples,
       modemProfile: profileKey,
+      encodedBytes: encoder.compressed.length,
+      protocolBytes,
+      sourceBlocks: encoder.k,
+      fountainBlocks: encoder.k + extraBlocks,
     }
   }
 }

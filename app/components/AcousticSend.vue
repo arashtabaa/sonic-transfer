@@ -1,11 +1,12 @@
 <script setup lang="ts">
-  import { ModemProfileKey, SonicWaveformRenderer, probeOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
+  import { ModemProfileKey, SonicWaveformRenderer, benchmarkPayload, formatDuration, probeOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
 import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
 const oggStatus = ref<'IDLE' | 'SUPPORTED' | 'UNSUPPORTED' | 'FAILED'>('IDLE')
 const oggStatusMessage = ref('')
+const throughputEstimate = ref<ReturnType<typeof benchmarkPayload> | null>(null)
 
 const inputDevices = ref<MediaDeviceInfo[]>([])
 const outputDevices = ref<MediaDeviceInfo[]>([])
@@ -22,6 +23,7 @@ async function onFileSelected(file?: File) {
   if (!file) return
   const buffer = await file.arrayBuffer()
   await store.setFile(new Uint8Array(buffer), file.name, file.type || 'application/octet-stream')
+  throughputEstimate.value = benchmarkPayload(store.storedData!, store.selectedProfile, { filename: file.name, contentType: file.type || 'application/octet-stream' })
 }
 
 async function startRealFileTransfer() {
@@ -223,6 +225,16 @@ async function exportOggArtifact() {
             <span :class="store.isTransmitting ? 'i-carbon-stop-filled' : 'i-carbon-send-alt-filled'" class="text-base" />
             {{ store.isTransmitting ? 'Stop File Transmission' : 'Start Real File Transfer' }}
           </button>
+        </div>
+        <div v-if="throughputEstimate" class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs font-mono text-amber-200">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <span>Profile: {{ throughputEstimate.profile }}</span>
+            <span>Useful rate: {{ throughputEstimate.usefulBitrate.toFixed(0) }} bit/s</span>
+            <span>Audio duration: {{ formatDuration(throughputEstimate.durationSeconds) }}</span>
+          </div>
+          <p v-if="throughputEstimate.durationSeconds > 120" class="mt-2 text-amber-300">
+            Warning: this existing data profile will take a long time. This estimate is based on the generated PCM waveform; physical performance is unverified.
+          </p>
         </div>
       </div>
     </div>
