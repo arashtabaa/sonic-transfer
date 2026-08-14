@@ -8,6 +8,10 @@ describe('adaptive acoustic handshake V1', () => {
     expect(AcousticFrameType.CALIBRATION_COMMAND).toBe(0x14)
     const command = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, phase: 'START_GAIN_SWEEP' as const, direction: 'INITIATOR_TO_RESPONDER' as const, sequence: 1 }
     expect(decodeCalibrationCommand(encodeCalibrationCommand(command))).toEqual(command)
+    const lock = { ...command, phase: 'LOCK_GAIN' as const, sequence: 2, lockedGain: 0.46 }
+    expect(decodeCalibrationCommand(encodeCalibrationCommand(lock))).toEqual(lock)
+    expect(decodeCalibrationCommand(encodeCalibrationCommand({ ...lock, lockedGain: null }))).toBeNull()
+    expect(decodeCalibrationCommand(encodeCalibrationCommand({ ...command, lockedGain: 0.46 }))).toBeNull()
     const ping = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, pingSequence: 1, txAppGain: 0.26 }
     expect(decodeCalibrationPing(encodeCalibrationPing(ping))).toEqual(ping)
     const report = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, pingSequence: 1, signalPeak: 0.5, signalRms: 0.2, noiseRms: 0.01, snrDb: 26, clippingFraction: 0, crcValid: true, classification: 'GOOD' as const }
@@ -17,16 +21,22 @@ describe('adaptive acoustic handshake V1', () => {
   })
 
   it('selects the lowest gain with repeated reliable evidence', () => {
-    const measurements: GainMeasurement[] = [0.18, 0.18, 0.18].map(gain => ({ gain, classification: 'TOO_WEAK', snrDb: 3, clippingFraction: 0, crcValid: true }))
-    measurements.push(...[0.26, 0.26, 0.26].map(gain => ({ gain, classification: 'GOOD' as const, snrDb: 14, clippingFraction: 0, crcValid: true })))
-    measurements.push(...[0.34, 0.34, 0.34].map(gain => ({ gain, classification: 'GOOD' as const, snrDb: 20, clippingFraction: 0.2, crcValid: true })))
+    const measurements: GainMeasurement[] = [0.18, 0.18, 0.18].map(gain => ({ gain, classification: 'TOO_WEAK', signalRms: 0.01, snrDb: 3, clippingFraction: 0, crcValid: true }))
+    measurements.push(...[0.26, 0.26, 0.26].map(gain => ({ gain, classification: 'GOOD' as const, signalRms: 0.1, snrDb: 14, clippingFraction: 0, crcValid: true })))
+    measurements.push(...[0.34, 0.34, 0.34].map(gain => ({ gain, classification: 'GOOD' as const, signalRms: 0.1, snrDb: 20, clippingFraction: 0.2, crcValid: true })))
     expect(selectGain(measurements).selectedGain).toBe(0.26)
     expect(classifyLevel(0.4, 0.01, 0.2, true)).toBe('TOO_LOUD')
   })
 
   it('rejects severe attenuation at the safe maximum', () => {
-    const measurements: GainMeasurement[] = [0.12, 0.26, 0.46, 0.85].flatMap(gain => [1, 2, 3].map(() => ({ gain, classification: 'NOT_HEARD' as const, snrDb: null, clippingFraction: 0, crcValid: false })))
+    const measurements: GainMeasurement[] = [0.12, 0.26, 0.46, 0.85].flatMap(gain => [1, 2, 3].map(() => ({ gain, classification: 'NOT_HEARD' as const, signalRms: 0, snrDb: null, clippingFraction: 0, crcValid: false })))
     expect(selectGain(measurements).reason).toBe('SIGNAL_TOO_WEAK_AT_MAX_APP_GAIN')
+  })
+
+  it('selects repeated decoded signal without fabricating SNR', () => {
+    const measurements: GainMeasurement[] = [0.26, 0.26, 0.26].map(gain => ({ gain, classification: 'GOOD', signalRms: 0.08, snrDb: null, clippingFraction: 0, crcValid: true }))
+    expect(selectGain(measurements).selectedGain).toBe(0.26)
+    expect(classifyLevel(0.08, null, 0, true)).toBe('GOOD')
   })
 
   it('selects a contiguous viable band and applies the Nyquist guard', () => {
@@ -42,7 +52,7 @@ describe('adaptive acoustic handshake V1', () => {
     const runtime = new AdaptiveHandshakeRuntime(() => now++)
     runtime.start(10, 20)
     runtime.recordControlLink(true)
-    const good = [0.26, 0.26, 0.26].map(gain => ({ gain, classification: 'GOOD' as const, snrDb: 14, clippingFraction: 0, crcValid: true }))
+    const good = [0.26, 0.26, 0.26].map(gain => ({ gain, classification: 'GOOD' as const, signalRms: 0.1, snrDb: 14, clippingFraction: 0, crcValid: true }))
     expect(runtime.lockLocalGain(good).selectedGain).toBe(0.26)
     runtime.beginRemoteGain()
     expect(runtime.lockRemoteGain(good).selectedGain).toBe(0.26)

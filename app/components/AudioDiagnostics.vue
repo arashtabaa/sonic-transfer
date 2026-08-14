@@ -319,6 +319,7 @@ async function runCalibration() {
         <span>Candidate gain: <strong>{{ store.adaptiveCandidateGain ?? 'unavailable' }}</strong></span>
         <span>Effective gain: <strong>{{ store.effectiveTxGain.toFixed(2) }}</strong></span>
         <span>Remote gain: <strong>{{ store.adaptiveRemoteGain ?? 'unavailable' }}</strong></span>
+        <span>Gain SNR: <strong>SNR: unavailable</strong></span>
         <span>Selected band: <strong>{{ store.adaptiveSelectedBand ? `${store.adaptiveSelectedBand.startFreq}-${store.adaptiveSelectedBand.endFreq} Hz` : 'unavailable' }}</strong></span>
         <span>Profile: <strong>{{ store.selectedProfile }}</strong></span>
         <span>Fingerprint: <strong>{{ store.adaptiveConfigFingerprint || 'unavailable' }}</strong></span>

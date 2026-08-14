@@ -4,6 +4,7 @@ export interface HalfDuplexTimingPolicy {
   POLL_RESPONSE_DELAY_MS: number
   CONTROL_WINDOW_MS: number
   PROFILE_RESPONSE_DELAY_MS: number
+  ADAPTIVE_RESPONSE_MARGIN_MS: number
 }
 
 export const HALF_DUPLEX_TIMING: Readonly<HalfDuplexTimingPolicy> = Object.freeze({
@@ -12,6 +13,7 @@ export const HALF_DUPLEX_TIMING: Readonly<HalfDuplexTimingPolicy> = Object.freez
   POLL_RESPONSE_DELAY_MS: 200,
   CONTROL_WINDOW_MS: 3000,
   PROFILE_RESPONSE_DELAY_MS: 200,
+  ADAPTIVE_RESPONSE_MARGIN_MS: 50,
 })
 
 export interface TurnaroundEvent { kind: 'SENDER_RX_READY' | 'FEEDBACK_START'; atMs: number }

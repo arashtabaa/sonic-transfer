@@ -31,13 +31,17 @@ export class AdaptiveHandshakeController {
       if (this.disposed) return { selectedGain: null, measurements, reason: 'CONTROL_LINK_NOT_HEARD' }
       this.options.setCandidateGain(gain)
       this.emit(direction === 'INITIATOR_TO_RESPONDER' ? 'LOCAL_GAIN_SWEEP' : 'REMOTE_GAIN_SWEEP', `Testing ${direction === 'INITIATOR_TO_RESPONDER' ? 'local' : 'remote'} gain ${gain}`)
-      for (let attempt = 0; attempt < INITIAL_SYNTHETIC_CALIBRATION_POLICY.samplesPerCandidate; attempt++) {
+      let successfulReports = 0
+      let attempts = 0
+      while (successfulReports < INITIAL_SYNTHETIC_CALIBRATION_POLICY.samplesPerCandidate && attempts < INITIAL_SYNTHETIC_CALIBRATION_POLICY.samplesPerCandidate + 3) {
+        attempts++
         const pingSequence = ++this.pingSequence
         const frame = encodeFrame(context.controlSessionId, AcousticFrameType.CALIBRATION_PING, pingSequence, encodeCalibrationPing({ protocolVersion: 1, controlSessionId: context.controlSessionId, calibrationNonce: context.calibrationNonce, pingSequence, txAppGain: gain }))
         const reportPromise = this.options.transport.waitForLevelReport(context, pingSequence, this.options.timeoutMs ?? 1500)
         await this.options.transport.sendRobust(frame, gain)
         const report = await reportPromise
-        measurements.push(report ? { gain, classification: report.classification, snrDb: report.snrDb, clippingFraction: report.clippingFraction, crcValid: report.crcValid } : { gain, classification: 'NOT_HEARD', snrDb: null, clippingFraction: 0, crcValid: false })
+        measurements.push(report ? { gain, classification: report.classification, signalRms: report.signalRms, snrDb: report.snrDb, clippingFraction: report.clippingFraction, crcValid: report.crcValid } : { gain, classification: 'NOT_HEARD', signalRms: 0, snrDb: null, clippingFraction: 0, crcValid: false })
+        if (report) successfulReports++
       }
       const selection = selectGain(measurements)
       if (selection.selectedGain !== null) {

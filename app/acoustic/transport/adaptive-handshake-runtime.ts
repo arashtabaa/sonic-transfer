@@ -5,15 +5,15 @@ export type AdaptiveHandshakeState = 'IDLE' | 'BOOTSTRAP_CONTROL_LINK' | 'LOCAL_
 export interface AdaptiveLinkContext { controlSessionId: number; calibrationNonce: number; role: 'INITIATOR' | 'RESPONDER'; startedAt: number }
 export type HandshakeFailure = 'CONTROL_LINK_NOT_HEARD' | 'SIGNAL_TOO_WEAK_AT_MAX_APP_GAIN' | 'FAST_UNAVAILABLE' | 'PROFILE_VERIFICATION_FAILED'
 
-export interface GainMeasurement { gain: number; classification: LevelClassification; snrDb: number | null; clippingFraction: number; crcValid: boolean }
-export interface GainPolicy { minAppGain: number; maxAppGain: number; candidates: number[]; requiredValidRatio: number; minimumSnrDb: number; maxClippingFraction: number; samplesPerCandidate: number }
+export interface GainMeasurement { gain: number; classification: LevelClassification; signalRms: number; snrDb: number | null; clippingFraction: number; crcValid: boolean }
+export interface GainPolicy { minAppGain: number; maxAppGain: number; candidates: number[]; requiredValidRatio: number; minimumSnrDb: number; minimumSignalRms: number; maxClippingFraction: number; samplesPerCandidate: number }
 export interface GainSelection { selectedGain: number | null; measurements: GainMeasurement[]; reason?: HandshakeFailure }
 export interface FrequencyMeasurement { frequencyHz: number; signalRms: number; noiseRms: number | null; snrDb: number | null; peak: number; usable: boolean; clipped: boolean }
 export interface SelectedBand { selectedStartFreq: number; selectedEndFreq: number; selectedCarrierCount: number; evidence: FrequencyMeasurement[] }
 export interface AdaptiveHandshakeResult { controlSessionId: number; calibrationNonce: number; localTxGain: number; remoteTxGain: number; selectedDataProfile: string; modulationId: string; startFreq: number; endFreq: number; carrierCount: number; pilotInterval: number; txSampleRate: number; rxSampleRate: number; configFingerprint: string; verificationClass: 'READY'; createdAt: number }
 export interface HandshakeEvent { atMs: number; state: AdaptiveHandshakeState; message: string; evidence?: Record<string, unknown> }
 
-export const INITIAL_SYNTHETIC_CALIBRATION_POLICY: Readonly<GainPolicy> = Object.freeze({ minAppGain: 0.12, maxAppGain: 0.85, candidates: [0.12, 0.18, 0.26, 0.34, 0.46, 0.60, 0.74, 0.85], requiredValidRatio: 0.8, minimumSnrDb: 8, maxClippingFraction: 0.01, samplesPerCandidate: 3 })
+export const INITIAL_SYNTHETIC_CALIBRATION_POLICY: Readonly<GainPolicy> = Object.freeze({ minAppGain: 0.12, maxAppGain: 0.85, candidates: [0.12, 0.18, 0.26, 0.34, 0.46, 0.60, 0.74, 0.85], requiredValidRatio: 0.8, minimumSnrDb: 8, minimumSignalRms: 0.02, maxClippingFraction: 0.01, samplesPerCandidate: 3 })
 
 export function createAdaptivePilotConfig(sampleRate: number, band: Pick<SelectedBand, 'selectedStartFreq' | 'selectedEndFreq' | 'selectedCarrierCount'>, options: { pilotInterval?: 8 | 16 | 32; symbolDurationMs?: 5 | 10 | 15; guardMs?: number; gain?: number } = {}): PilotMultitoneConfig {
   if (band.selectedStartFreq >= band.selectedEndFreq || band.selectedEndFreq > sampleRate / 2 - 1500) throw new Error('band violates Nyquist guard')
@@ -48,7 +48,8 @@ export function classifyLevel(signalRms: number, noiseRms: number | null, clippi
   if (!crcValid && signalRms <= 1e-6) return 'NOT_HEARD'
   if (clippingFraction > 0.01) return 'TOO_LOUD'
   if (!crcValid) return 'UNUSABLE'
-  if (noiseRms === null || signalRms <= 1e-6) return 'TOO_WEAK'
+  if (signalRms <= 1e-6) return 'TOO_WEAK'
+  if (noiseRms === null) return signalRms >= INITIAL_SYNTHETIC_CALIBRATION_POLICY.minimumSignalRms ? 'GOOD' : 'TOO_WEAK'
   const snr = 20 * Math.log10(signalRms / Math.max(noiseRms, 1e-9))
   return snr >= 8 ? 'GOOD' : 'TOO_WEAK'
 }
@@ -63,10 +64,11 @@ export function selectGain(measurements: GainMeasurement[], policy: GainPolicy =
   }
   for (const gain of [...policy.candidates].sort((a, b) => a - b)) {
     const group = byGain.get(gain) || []
-    if (group.length < policy.samplesPerCandidate) continue
-    const valid = group.filter(m => m.crcValid && m.classification === 'GOOD' && m.clippingFraction <= policy.maxClippingFraction)
-    const snrs = valid.map(m => m.snrDb).filter((v): v is number => v !== null)
-    if (valid.length / group.length >= policy.requiredValidRatio && snrs.length > 0 && Math.min(...snrs) >= policy.minimumSnrDb) return { selectedGain: gain, measurements }
+    const heard = group.filter(m => m.classification !== 'NOT_HEARD')
+    if (heard.length < policy.samplesPerCandidate) continue
+    const valid = heard.filter(m => m.crcValid && m.classification === 'GOOD' && m.clippingFraction <= policy.maxClippingFraction)
+    const evidenceValid = valid.filter(m => m.snrDb !== null ? m.snrDb >= policy.minimumSnrDb : m.signalRms >= policy.minimumSignalRms)
+    if (evidenceValid.length / heard.length >= policy.requiredValidRatio) return { selectedGain: gain, measurements }
   }
   return { selectedGain: null, measurements, reason: 'SIGNAL_TOO_WEAK_AT_MAX_APP_GAIN' }
 }

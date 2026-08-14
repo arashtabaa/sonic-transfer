@@ -36,6 +36,7 @@ export interface CalibrationCommandPayload {
   phase: CalibrationPhase
   direction: CalibrationDirection
   sequence: number
+  lockedGain?: number | null
 }
 
 export interface CalibrationPingPayload {
@@ -97,7 +98,10 @@ export function encodeCalibrationCommand(payload: CalibrationCommandPayload): Ui
 export function decodeCalibrationCommand(bytes: Uint8Array): CalibrationCommandPayload | null {
   try {
     const p = parseObject(bytes) as CalibrationCommandPayload
-    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && CALIBRATION_PHASES.includes(p.phase) && CALIBRATION_DIRECTIONS.includes(p.direction) && isPositiveSequence(p.sequence) ? p : null
+    const hasLockedGain = p.lockedGain !== undefined && p.lockedGain !== null
+    const gainValid = !hasLockedGain || isGain(p.lockedGain)
+    const phaseValid = p.phase === 'LOCK_GAIN' ? hasLockedGain : !hasLockedGain
+    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && CALIBRATION_PHASES.includes(p.phase) && CALIBRATION_DIRECTIONS.includes(p.direction) && isPositiveSequence(p.sequence) && gainValid && phaseValid ? p : null
   } catch { return null }
 }
 

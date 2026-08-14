@@ -7,6 +7,16 @@ export interface StreamDecoderStats {
   crcRejected: number
 }
 
+export interface ControlFrameObservation {
+  frame: AcousticFrame
+  pcm: Float32Array
+  startSample: number
+  endSample: number
+  signalPeak: number
+  signalRms: number
+  clippingFraction: number
+}
+
 /**
  * Persistent receiver for arbitrary microphone/audio-artifact chunks.
  * It owns sample timing, symbol acquisition, byte assembly and frame resync;
@@ -21,6 +31,11 @@ export class BFSKStreamDecoder {
   private readonly stride: number
   private readonly bitsPerSymbol: number
   private readonly stats: StreamDecoderStats = { framesDetected: 0, crcValid: 0, crcRejected: 0 }
+  private historyChunks: Array<{ startSample: number; samples: Float32Array }> = []
+  private historyLength = 0
+  private consumedSamples = 0
+  private frameStartSample = 0
+  private readonly observations: ControlFrameObservation[] = []
 
   constructor(private readonly modem: BFSKAcousticModem) {
     this.stride = modem.getSymbolStrideSamples()
@@ -29,6 +44,21 @@ export class BFSKStreamDecoder {
 
   public pushSamples(samples: Float32Array): AcousticFrame[] {
     if (samples.length === 0) return []
+    const inputStartSample = this.consumedSamples + this.sampleBuffer.length
+    const historyCopy = new Float32Array(samples)
+    this.historyChunks.push({ startSample: inputStartSample, samples: historyCopy })
+    this.historyLength += historyCopy.length
+    while (this.historyLength > 2_000_000 && this.historyChunks.length > 0) {
+      const first = this.historyChunks[0]!
+      const excess = this.historyLength - 2_000_000
+      if (first.samples.length <= excess) {
+        this.historyChunks.shift()
+        this.historyLength -= first.samples.length
+      } else {
+        this.historyChunks[0] = { startSample: first.startSample + excess, samples: first.samples.slice(excess) }
+        this.historyLength -= excess
+      }
+    }
     const merged = new Float32Array(this.sampleBuffer.length + samples.length)
     merged.set(this.sampleBuffer)
     merged.set(samples, this.sampleBuffer.length)
@@ -40,6 +70,7 @@ export class BFSKStreamDecoder {
         const acquired = this.acquireLock()
         if (acquired === null) break
         this.symbolOffset = acquired
+        this.frameStartSample = this.consumedSamples + acquired
         this.locked = true
       }
 
@@ -61,7 +92,7 @@ export class BFSKStreamDecoder {
       }
       this.consume(this.stride)
       this.symbolOffset = 0
-      frames.push(...this.extractFrames())
+        frames.push(...this.extractFrames())
     }
     return frames
   }
@@ -75,6 +106,11 @@ export class BFSKStreamDecoder {
     this.stats.framesDetected = 0
     this.stats.crcValid = 0
     this.stats.crcRejected = 0
+    this.historyChunks = []
+    this.historyLength = 0
+    this.consumedSamples = 0
+    this.frameStartSample = 0
+    this.observations.length = 0
   }
 
   public getStats(): StreamDecoderStats {
@@ -83,6 +119,10 @@ export class BFSKStreamDecoder {
 
   public getSampleRate(): number {
     return this.modem.config.sampleRate
+  }
+
+  public takeObservations(): ControlFrameObservation[] {
+    return this.observations.splice(0, this.observations.length)
   }
 
   private acquireLock(): number | null {
@@ -157,6 +197,19 @@ export class BFSKStreamDecoder {
       const frame = decodeFrame(raw)
       if (frame) {
         frames.push(frame)
+        const endSample = this.consumedSamples
+        const start = Math.max(this.frameStartSample, this.historyChunks[0]?.startSample ?? this.frameStartSample)
+        const pcm = this.collectHistory(start, endSample)
+        let sumSquares = 0
+        let peak = 0
+        let clipped = 0
+        for (const sample of pcm) {
+          const magnitude = Math.abs(sample)
+          sumSquares += sample * sample
+          peak = Math.max(peak, magnitude)
+          if (magnitude >= 0.98) clipped++
+        }
+        this.observations.push({ frame, pcm, startSample: start, endSample, signalPeak: peak, signalRms: pcm.length ? Math.sqrt(sumSquares / pcm.length) : 0, clippingFraction: pcm.length ? clipped / pcm.length : 0 })
         this.stats.framesDetected++
         this.stats.crcValid++
         this.byteFifo.splice(0, totalLength * 8)
@@ -193,6 +246,22 @@ export class BFSKStreamDecoder {
 
   private consume(count: number): void {
     if (count <= 0) return
-    this.sampleBuffer = this.sampleBuffer.slice(Math.min(count, this.sampleBuffer.length))
+    const consumed = Math.min(count, this.sampleBuffer.length)
+    this.sampleBuffer = this.sampleBuffer.slice(consumed)
+    this.consumedSamples += consumed
+  }
+
+  private collectHistory(startSample: number, endSample: number): Float32Array {
+    const start = Math.max(startSample, this.historyChunks[0]?.startSample ?? startSample)
+    const end = Math.min(endSample, this.historyChunks[this.historyChunks.length - 1]?.startSample! + this.historyChunks[this.historyChunks.length - 1]!.samples.length || endSample)
+    if (end <= start) return new Float32Array(0)
+    const result = new Float32Array(end - start)
+    for (const chunk of this.historyChunks) {
+      const chunkEnd = chunk.startSample + chunk.samples.length
+      const copyStart = Math.max(start, chunk.startSample)
+      const copyEnd = Math.min(end, chunkEnd)
+      if (copyEnd > copyStart) result.set(chunk.samples.subarray(copyStart - chunk.startSample, copyEnd - chunk.startSample), copyStart - start)
+    }
+    return result
   }
 }
