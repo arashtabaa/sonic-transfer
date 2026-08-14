@@ -25,10 +25,14 @@ export class SonicWaveformRenderer {
     profileKey = ModemProfileKey.ROBUST,
     sampleRate = 48000,
     sliceSize = 100,
+    extraBlocks = 30,
   ): RenderedWaveformResult {
     const config = getProfileConfig(profileKey, sampleRate)
     const modem = new BFSKAcousticModem(config)
-    const sessionId = Math.floor(Math.random() * 1000000)
+    const sessionNonce = new Uint32Array(1)
+    if (!globalThis.crypto?.getRandomValues) throw new Error('Secure randomness unavailable')
+    globalThis.crypto.getRandomValues(sessionNonce)
+    const sessionId = sessionNonce[0]!
     const packetizer = new AcousticPacketizer(sessionId)
 
     const canonicalPayload = appendFileHeaderMetaToBuffer(data, { filename, contentType })
@@ -55,9 +59,7 @@ export class SonicWaveformRenderer {
     frames.push(headerAudioFrame)
     totalSamples += headerAudioFrame.samples.length
 
-    // Generate Fountain Data blocks (k + 80% redundancy for offline rendering)
-    const extraBlocks = Math.max(30, Math.ceil(encoder.k * 0.8))
-
+    // Redundancy is an explicit renderer parameter, not a test-only multiplier.
     for (let seq = 1; seq <= encoder.k + extraBlocks; seq++) {
       const block = fountain.next().value
       const blockBytes = blockToBinary(block)

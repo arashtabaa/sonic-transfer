@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ModemProfileKey, SonicWaveformRenderer, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
+import { ModemProfileKey, SonicWaveformRenderer, detectOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
 import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
+const oggStatus = ref<'IDLE' | 'SUPPORTED' | 'UNSUPPORTED' | 'FAILED'>('IDLE')
+const oggStatusMessage = ref('')
 
 const inputDevices = ref<MediaDeviceInfo[]>([])
 const outputDevices = ref<MediaDeviceInfo[]>([])
@@ -45,6 +47,12 @@ async function exportWavArtifact() {
 }
 
 async function exportOggArtifact() {
+  const capability = detectOggOpusSupport()
+  if (!capability.supported) {
+    oggStatus.value = 'UNSUPPORTED'
+    oggStatusMessage.value = capability.reason || 'WebCodecs Opus is unavailable in this browser.'
+    return
+  }
   const payload = store.storedData || generateTestPayload()
   const renderResult = SonicWaveformRenderer.renderPayloadToPcm(
     payload,
@@ -59,8 +67,11 @@ async function exportOggArtifact() {
     a.href = url
     a.download = `sonic-${store.sendFilename || 'test'}.ogg`
     a.click()
+    oggStatus.value = 'SUPPORTED'
+    oggStatusMessage.value = 'Genuine Ogg/Opus artifact exported.'
   } catch (e: any) {
-    alert(e.message || 'OGG/Opus export unsupported')
+    oggStatus.value = 'FAILED'
+    oggStatusMessage.value = e.message || 'OGG/Opus export failed.'
   }
 }
 </script>
@@ -238,6 +249,9 @@ async function exportOggArtifact() {
             Export Sonic OGG / Opus
           </button>
         </div>
+        <p v-if="oggStatus !== 'IDLE'" class="font-sans" :class="oggStatus === 'SUPPORTED' ? 'text-emerald-400' : oggStatus === 'UNSUPPORTED' ? 'text-amber-400' : 'text-red-400'">
+          OGG/Opus: {{ oggStatus }} — {{ oggStatusMessage }}
+        </p>
       </div>
     </Collapsable>
   </div>
