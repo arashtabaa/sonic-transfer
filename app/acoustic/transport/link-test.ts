@@ -1,5 +1,6 @@
-import { AcousticFrameType, encodeFrame, type ChannelReportPayload, type ProfileProbePayload, classifyProfileVerification, decodeChannelReport, decodeProfileProbe, encodeChannelReport, encodeProfileProbe } from '../protocol/frame'
+import { AcousticFrameType, encodeFrame, type ChannelReportPayload, type ProfileProbePayload, classifyProfileVerification, encodeChannelReport, encodeProfileProbe } from '../protocol/frame'
 import { getProfileConfig, ModemProfileKey, validateConfig, type ModemConfig } from '../modulation/modem'
+import type { ParallelMultitoneConfig } from '../modulation/parallel-multitone-modem'
 
 export interface LinkTestOptions {
   profileKey: ModemProfileKey
@@ -46,8 +47,9 @@ export interface ProfileProposalPayload {
   verificationNonce: number
   profile: ModemProfileKey
   sampleRate: number
-  config: ModemConfig
+  config: ModemConfig | ParallelMultitoneConfig
   probeCount: number
+  configFingerprint: string
 }
 
 export function encodeProfileProposal(payload: ProfileProposalPayload): Uint8Array {
@@ -57,7 +59,8 @@ export function encodeProfileProposal(payload: ProfileProposalPayload): Uint8Arr
 export function decodeProfileProposal(bytes: Uint8Array): ProfileProposalPayload | null {
   try {
     const payload = JSON.parse(new TextDecoder().decode(bytes)) as ProfileProposalPayload
-    if (payload.protocolVersion !== 1 || !payload.profile || payload.probeCount < 1 || !payload.config) return null
+    const c = payload.config
+    if (payload.protocolVersion !== 1 || !Object.values(ModemProfileKey).includes(payload.profile) || !Number.isInteger(payload.sessionId) || payload.sessionId < 0 || !Number.isInteger(payload.verificationNonce) || payload.verificationNonce < 0 || !Number.isInteger(payload.probeCount) || payload.probeCount < 1 || payload.probeCount > 128 || !Number.isFinite(payload.sampleRate) || payload.sampleRate < 8000 || payload.sampleRate > 192000 || typeof payload.configFingerprint !== 'string' || payload.configFingerprint.length < 8 || payload.configFingerprint.length > 512 || !c || c.profileKey !== payload.profile || c.sampleRate !== payload.sampleRate || ![c.startFreq, c.endFreq, c.carrierCount, c.symbolDurationMs, c.guardMs, c.gain].every(Number.isFinite) || c.carrierCount < 2 || c.carrierCount > 64 || c.symbolDurationMs <= 0 || c.guardMs < 0 || c.gain <= 0 || c.gain > 1) return null
     return payload
   } catch { return null }
 }
@@ -83,7 +86,8 @@ export function classifyProfileReport(crcValid: number, attemptedProbes: number)
 }
 
 export function validateProfileProposal(payload: ProfileProposalPayload, actualSampleRate: number): boolean {
-  return payload.sampleRate === actualSampleRate && payload.config.sampleRate === actualSampleRate && validateConfig(payload.config).valid
+  const localConfig = { ...payload.config, sampleRate: actualSampleRate }
+  return payload.config.sampleRate === payload.sampleRate && validateConfig(localConfig).valid
 }
 
 export function encodeFrequencyProbe(payload: FrequencyProbePayload): Uint8Array {

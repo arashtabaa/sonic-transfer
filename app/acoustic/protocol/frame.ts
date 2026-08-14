@@ -18,6 +18,7 @@ export enum AcousticFrameType {
   SESSION_HEADER = 0x10,
   DATA = 0x11,
   END = 0x12,
+  PROFILE_PROBE_END = 0x13,
 }
 
 export interface AcousticFrame {
@@ -82,6 +83,23 @@ export interface ChannelReportPayload {
   per: number
   classification: ProfileVerificationClass
   sampleRate: number
+  configFingerprint: string
+}
+
+export interface ProfileProbeEndPayload {
+  protocolVersion: number
+  sessionId: number
+  verificationNonce: number
+  profile: string
+  attemptedProbes: number
+}
+
+export interface ProfileRejectPayload {
+  protocolVersion: number
+  sessionId: number
+  verificationNonce: number
+  profile: string
+  reason: 'UNSUPPORTED_PROFILE' | 'NYQUIST_INCOMPATIBLE' | 'INVALID_CONFIG' | 'UNSUPPORTED_MODULATION' | 'BUSY' | 'PROTOCOL_VERSION_MISMATCH'
 }
 
 export function encodeProfileProbe(payload: ProfileProbePayload): Uint8Array {
@@ -90,8 +108,8 @@ export function encodeProfileProbe(payload: ProfileProbePayload): Uint8Array {
 
 export function decodeProfileProbe(bytes: Uint8Array): ProfileProbePayload | null {
   try {
-    const payload = JSON.parse(new TextDecoder().decode(bytes)) as ProfileProbePayload
-    if (payload.protocolVersion !== PROTOCOL_VERSION || !payload.profile || payload.totalProbes < 1 || payload.probeSequence < 1 || payload.probeSequence > payload.totalProbes) return null
+    const payload = parseObject(bytes) as ProfileProbePayload
+    if (payload.protocolVersion !== PROTOCOL_VERSION || !isKnownProfile(payload.profile) || !isUint32(payload.sessionId) || !isUint32(payload.verificationNonce) || !Number.isInteger(payload.totalProbes) || payload.totalProbes < 1 || payload.totalProbes > 128 || !Number.isInteger(payload.probeSequence) || payload.probeSequence < 1 || payload.probeSequence > payload.totalProbes) return null
     return payload
   } catch { return null }
 }
@@ -101,7 +119,20 @@ export function encodeChannelReport(payload: ChannelReportPayload): Uint8Array {
 }
 
 export function decodeChannelReport(bytes: Uint8Array): ChannelReportPayload | null {
-  try { return JSON.parse(new TextDecoder().decode(bytes)) as ChannelReportPayload } catch { return null }
+  try {
+    const payload = parseObject(bytes) as ChannelReportPayload
+    if (payload.protocolVersion !== PROTOCOL_VERSION || !isKnownProfile(payload.profile) || !isUint32(payload.sessionId) || !isUint32(payload.verificationNonce) || !Number.isInteger(payload.attemptedProbes) || payload.attemptedProbes < 1 || payload.attemptedProbes > 128 || !Number.isInteger(payload.framesDetected) || payload.framesDetected < 0 || !Number.isInteger(payload.crcValid) || payload.crcValid < 0 || payload.crcValid > payload.attemptedProbes || !Number.isInteger(payload.crcInvalid) || payload.crcInvalid < 0 || !Number.isFinite(payload.per) || payload.per < 0 || payload.per > 1 || !['READY', 'MARGINAL', 'FAILED'].includes(payload.classification) || !Number.isFinite(payload.sampleRate) || payload.sampleRate < 8000 || payload.sampleRate > 192000 || typeof payload.configFingerprint !== 'string' || payload.configFingerprint.length < 8 || payload.configFingerprint.length > 512) return null
+    return payload
+  } catch { return null }
+}
+
+export function encodeProfileProbeEnd(payload: ProfileProbeEndPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeProfileProbeEnd(bytes: Uint8Array): ProfileProbeEndPayload | null {
+  try { const payload = parseObject(bytes) as ProfileProbeEndPayload; return payload.protocolVersion === PROTOCOL_VERSION && isKnownProfile(payload.profile) && isUint32(payload.sessionId) && isUint32(payload.verificationNonce) && Number.isInteger(payload.attemptedProbes) && payload.attemptedProbes >= 1 && payload.attemptedProbes <= 128 ? payload : null } catch { return null }
+}
+export function encodeProfileReject(payload: ProfileRejectPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeProfileReject(bytes: Uint8Array): ProfileRejectPayload | null {
+  try { const payload = parseObject(bytes) as ProfileRejectPayload; return payload.protocolVersion === PROTOCOL_VERSION && isKnownProfile(payload.profile) && isUint32(payload.sessionId) && isUint32(payload.verificationNonce) && ['UNSUPPORTED_PROFILE', 'NYQUIST_INCOMPATIBLE', 'INVALID_CONFIG', 'UNSUPPORTED_MODULATION', 'BUSY', 'PROTOCOL_VERSION_MISMATCH'].includes(payload.reason) ? payload : null } catch { return null }
 }
 
 export function classifyProfileVerification(crcValid: number, attemptedProbes: number): ProfileVerificationClass {
@@ -111,6 +142,15 @@ export function classifyProfileVerification(crcValid: number, attemptedProbes: n
   if (ratio >= 0.6) return 'MARGINAL'
   return 'FAILED'
 }
+
+function parseObject(bytes: Uint8Array): Record<string, any> {
+  const value = JSON.parse(new TextDecoder().decode(bytes))
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('payload must be an object')
+  return value
+}
+
+function isUint32(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 0xffffffff }
+function isKnownProfile(value: unknown): boolean { return ['auto', 'robust', 'balanced', 'turbo', 'near_ultrasonic', 'ultrasonic_experimental', 'custom'].includes(String(value)) }
 
 export function encodeTestFileStart(payload: TestFileStartPayload): Uint8Array {
   const jsonStr = JSON.stringify(payload)
