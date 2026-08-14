@@ -25,6 +25,25 @@ export function fingerprintAdaptiveConfig(config: PilotMultitoneConfig): string 
   return JSON.stringify({ protocolVersion: 1, modulationId: config.modulationId, startFreq: config.startFreq, endFreq: config.endFreq, carrierCount: config.carrierCount, pilotInterval: config.pilotInterval, symbolDurationMs: config.symbolDurationMs, guardMs: config.guardMs, gain: config.gain, sampleRate: config.sampleRate })
 }
 
+export function actualCarrierFrequencies(startFreq: number, endFreq: number, carrierCount: 4 | 8 | 12 | 16): number[] {
+  return Array.from({ length: carrierCount }, (_, index) => startFreq + (endFreq - startFreq) * (index + 0.5) / carrierCount)
+}
+
+export function selectMeasuredV2Config(measurements: FrequencyMeasurement[], sampleRate: number, gain: number, pilotInterval: 8 | 16 | 32 = 16): { config: PilotMultitoneConfig; carrierFrequencies: number[]; evidence: FrequencyMeasurement[] } | null {
+  const candidates: Array<[number, number, 4 | 8 | 12 | 16]> = [[6000, 12000, 4], [6000, 14000, 8], [6000, 16000, 12], [8000, 16000, 8], [8000, 18000, 8]]
+  let best: { config: PilotMultitoneConfig; carrierFrequencies: number[]; evidence: FrequencyMeasurement[]; score: number } | null = null
+  for (const [startFreq, endFreq, carrierCount] of candidates) {
+    if (endFreq > sampleRate / 2 - 1500) continue
+    const carrierFrequencies = actualCarrierFrequencies(startFreq, endFreq, carrierCount)
+    const evidence = carrierFrequencies.map(f => measurements.reduce((a, b) => Math.abs(b.frequencyHz - f) < Math.abs(a.frequencyHz - f) ? b : a, measurements[0]!))
+    if (evidence.length !== carrierCount || evidence.some(m => !m || !m.usable || m.clipped)) continue
+    const snrs = evidence.map(m => m.snrDb ?? -Infinity).sort((a, b) => a - b)
+    const score = (snrs[Math.floor(snrs.length / 2)] || -Infinity) * 10 - (endFreq - startFreq) * 0.001
+    if (!best || score > best.score) best = { config: createAdaptivePilotConfig(sampleRate, { selectedStartFreq: startFreq, selectedEndFreq: endFreq, selectedCarrierCount: carrierCount }, { gain, pilotInterval }), carrierFrequencies, evidence, score }
+  }
+  return best ? { config: best.config, carrierFrequencies: best.carrierFrequencies, evidence: best.evidence } : null
+}
+
 export function classifyLevel(signalRms: number, noiseRms: number | null, clippingFraction: number, crcValid: boolean): LevelClassification {
   if (!crcValid && signalRms <= 1e-6) return 'NOT_HEARD'
   if (clippingFraction > 0.01) return 'TOO_LOUD'

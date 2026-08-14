@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcousticFrameType, AdaptiveHandshakeRuntime, FrequencyProbeAnalyzer, FrequencyProbeRenderer, HALF_DUPLEX_TIMING, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeFrequencyProbe, decodeFrequencyReport, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeFrequencyProbe, encodeFrequencyReport, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
+import { AcousticFrameType, AdaptiveHandshakeRuntime, FrequencyProbeAnalyzer, FrequencyProbeRenderer, HALF_DUPLEX_TIMING, StreamingFrequencyProbeAnalyzer, actualCarrierFrequencies, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeFrequencyProbe, decodeFrequencyReport, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeFrequencyProbe, encodeFrequencyReport, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, selectMeasuredV2Config, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
 
 const sha = 'a'.repeat(64)
 
@@ -79,9 +79,20 @@ describe('adaptive acoustic handshake V1', () => {
     let offset = 0
     for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length }
     const measurements = new FrequencyProbeAnalyzer({ sampleRate: 44100, frequenciesHz: probe.frequenciesHz, toneDurationMs: probe.toneDurationMs, guardMs: probe.guardMs }).analyze(merged, 7)
+    const streaming = new StreamingFrequencyProbeAnalyzer(new FrequencyProbeAnalyzer({ sampleRate: 44100, frequenciesHz: probe.frequenciesHz, toneDurationMs: probe.toneDurationMs, guardMs: probe.guardMs }))
+    for (let i = 0; i < merged.length; i += 257) streaming.pushSamples(merged.subarray(i, Math.min(merged.length, i + 257)))
+    expect(streaming.analyze(7)).toEqual(measurements)
     expect(measurements).toHaveLength(4)
     expect(measurements.every(measurement => measurement.signalRms > 0.01)).toBe(true)
     const report = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, probeSequence: 1, measurements }
     expect(decodeFrequencyReport(encodeFrequencyReport(report))).toEqual(report)
+  })
+
+  it('selects V2 candidates from actual carrier-center evidence', () => {
+    const frequencies = actualCarrierFrequencies(6000, 12000, 4)
+    const measurements = frequencies.map(frequencyHz => ({ frequencyHz, signalRms: 0.1, noiseRms: 0.01, snrDb: 20, peak: 0.3, usable: true, clipped: false }))
+    const selected = selectMeasuredV2Config(measurements, 44100, 0.26)
+    expect(selected?.config.carrierCount).toBe(4)
+    expect(selected?.carrierFrequencies).toEqual(frequencies)
   })
 })

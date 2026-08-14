@@ -46,6 +46,20 @@ export class FrequencyProbeAnalyzer {
   }
 }
 
+export class StreamingFrequencyProbeAnalyzer {
+  private chunks: Float32Array[] = []
+  private length = 0
+  constructor(private readonly analyzer: FrequencyProbeAnalyzer) {}
+  pushSamples(samples: Float32Array): void { this.chunks.push(new Float32Array(samples)); this.length += samples.length }
+  analyze(initialOffset = 0): FrequencyMeasurementPayload[] {
+    const merged = new Float32Array(this.length)
+    let offset = 0
+    for (const chunk of this.chunks) { merged.set(chunk, offset); offset += chunk.length }
+    return this.analyzer.analyze(merged, initialOffset)
+  }
+  reset(): void { this.chunks = []; this.length = 0 }
+}
+
 function correlationEnergy(samples: Float32Array, offset: number, length: number, frequency: number, sampleRate: number): number {
   let re = 0
   let im = 0
