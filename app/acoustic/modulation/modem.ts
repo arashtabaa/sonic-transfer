@@ -9,6 +9,7 @@ export enum ModemProfileKey {
   TURBO = 'turbo',
   NEAR_ULTRASONIC = 'near_ultrasonic',
   ULTRASONIC_EXPERIMENTAL = 'ultrasonic_experimental',
+  FAST_DATA_EXPERIMENTAL = 'fast_data_experimental',
   CUSTOM = 'custom',
 }
 
@@ -128,6 +129,18 @@ export function getProfileConfig(profileKey: ModemProfileKey, sampleRate: number
         symbolDurationMs: 20,
         guardMs: 4,
         gain: 0.8,
+      }
+
+    case ModemProfileKey.FAST_DATA_EXPERIMENTAL:
+      return {
+        profileKey,
+        sampleRate,
+        startFreq: 6000,
+        endFreq: Math.min(18000, maxSafeFreq),
+        carrierCount: 16,
+        symbolDurationMs: 5,
+        guardMs: 1,
+        gain: 0.7,
       }
 
     case ModemProfileKey.AUTO:
