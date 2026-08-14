@@ -14,6 +14,7 @@ import {
   getProfileConfig,
   MetricsCollector,
   ModemProfileKey,
+  BFSKStreamDecoder,
   validateTestFileCompleteFrame,
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
@@ -135,6 +136,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const liveStats = ref(metricsCollector.getStats())
   let statsInterval: any = null
   let wakeLock: any = null
+  let controlRxDecoder: BFSKStreamDecoder | null = null
+  let dataRxDecoder: BFSKStreamDecoder | null = null
+  let rxSampleRateOverride: number | null = null
 
   // Modems: Dedicated ROBUST controlModem vs negotiated dataModem (Requirement 3 & 8)
   function getControlModem(sampleRate?: number): BFSKAcousticModem {
@@ -149,6 +153,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     const config = getProfileConfig(selectedProfile.value, rate)
     config.gain = outputGain.value
     return new BFSKAcousticModem(config)
+  }
+
+  function ensureRxDecoders() {
+    const rate = receiver?.getSampleRate() || rxSampleRateOverride || 48000
+    if (!controlRxDecoder || controlRxDecoder.getSampleRate() !== rate) {
+      controlRxDecoder = new BFSKStreamDecoder(getControlModem(rate))
+    }
+    if (!dataRxDecoder || dataRxDecoder.getSampleRate() !== rate) {
+      dataRxDecoder = new BFSKStreamDecoder(getDataModem(rate))
+    }
   }
 
   async function requestWakeLock() {
@@ -191,25 +205,34 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   // --- Central AudioReceiver Dispatcher (Requirement 3) ---
   function processCentralAudioData(samples: Float32Array) {
     liveSamples.value = samples
+    ensureRxDecoders()
 
     // 1. Control channel decode (ROBUST modem)
-    const controlModem = getControlModem()
-    const controlPackets = controlModem.decode(samples)
-    for (const pkt of controlPackets) {
-      handleIncomingPacket(pkt)
+    const controlFrames = controlRxDecoder!.pushSamples(samples)
+    for (const frame of controlFrames) {
+      handleIncomingPacket(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
     }
 
     // 2. Data channel decode (negotiated dataModem)
     if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE) {
-      const dataModem = getDataModem()
-      const dataPackets = dataModem.decode(samples)
-      if (dataPackets.length > 0) {
+      const dataFrames = dataRxDecoder!.pushSamples(samples)
+      if (dataFrames.length > 0) {
         dspStage.value = 'CARRIER_LOCKED'
       }
-      for (const pkt of dataPackets) {
-        handleIncomingPacket(pkt)
+      for (const frame of dataFrames) {
+        handleIncomingPacket(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
       }
     }
+  }
+
+  function prepareArtifactDecoding(sampleRate = 48000) {
+    if (!packetizer) packetizer = new AcousticPacketizer()
+    if (!decoderWorker) decoderWorker = createLTDecodeWorker()
+    controlRxDecoder = null
+    dataRxDecoder = null
+    rxSampleRateOverride = sampleRate
+    receiveMode.value = ReceiveMode.NORMAL_RECEIVE
+    dspStage.value = 'SEARCHING_FOR_SIGNAL'
   }
 
   // --- Real Half-Duplex Acoustic Link Probe & ACK Verification (Requirement 4 & 5) ---
@@ -249,6 +272,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       receiver.setOnAudioDataCallback(processCentralAudioData)
     }
     await receiver.start(selectedMicId.value || undefined)
+    rxSampleRateOverride = null
 
     // Timeout handler for LINK_ACK window
     setTimeout(() => {
@@ -493,6 +517,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     await receiver.start(selectedMicId.value || undefined)
+    controlRxDecoder = null
+    dataRxDecoder = null
+    ensureRxDecoders()
     isListening.value = true
     activePage.value = 'receive'
     await requestWakeLock()
@@ -748,6 +775,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     receivedSha256,
     isIntegrityVerified,
     liveStats,
+    processCentralAudioData,
+    prepareArtifactDecoding,
     setFile,
     skipVerification,
     runAcousticLinkCheck,

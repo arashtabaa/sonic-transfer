@@ -49,9 +49,7 @@ export class BFSKAcousticModem implements AcousticModem {
     for (let i = 0; i < bits.length; i += bitsPerSymbol) {
       let sym = 0
       for (let b = 0; b < bitsPerSymbol; b++) {
-        if (i + b < bits.length) {
-          sym = (sym << 1) | bits[i + b]!
-        }
+        sym = (sym << 1) | (i + b < bits.length ? bits[i + b]! : 0)
       }
       symbols.push(sym % this.config.carrierCount)
     }
@@ -146,6 +144,67 @@ export class BFSKAcousticModem implements AcousticModem {
     }
 
     return decodedPackets
+  }
+
+  /** Full encoded symbol stride, including the silent guard interval. */
+  public getSymbolStrideSamples(): number {
+    return this.samplesPerSymbol + this.guardSamples
+  }
+
+  /** Number of bits represented by one encoded symbol. */
+  public getBitsPerSymbol(): number {
+    return Math.log2(this.config.carrierCount) | 0 || 1
+  }
+
+  /**
+   * Analyze one active symbol. This is intentionally separate from decode():
+   * stream receivers must retain timing and framing state across callbacks.
+   */
+  public analyzeSymbol(samples: Float32Array, offset = 0): {
+    symbol: number
+    confidence: number
+    signalEnergy: number
+    hasCarrier: boolean
+  } | null {
+    if (offset < 0 || offset + this.samplesPerSymbol > samples.length) return null
+
+    const active = samples.subarray(offset, offset + this.samplesPerSymbol)
+    const windowed = applyWindow(active, 'hann')
+    let maxMag = -1
+    let secondMag = 0
+    let bestSym = 0
+    let energy = 0
+
+    for (let i = 0; i < active.length; i++) {
+      const value = active[i]!
+      energy += value * value
+    }
+    energy /= active.length || 1
+
+    for (let c = 0; c < this.carrierFreqs.length; c++) {
+      const frequency = this.carrierFreqs[c]!
+      let inPhase = 0
+      let quadrature = 0
+      for (let i = 0; i < windowed.length; i++) {
+        const angle = (2 * Math.PI * frequency * i) / this.config.sampleRate
+        inPhase += windowed[i]! * Math.cos(angle)
+        quadrature += windowed[i]! * Math.sin(angle)
+      }
+      const mag = Math.hypot(inPhase, quadrature) / (windowed.length / 2)
+      if (mag > maxMag) {
+        secondMag = maxMag > 0 ? maxMag : secondMag
+        maxMag = mag
+        bestSym = c
+      } else if (mag > secondMag) {
+        secondMag = mag
+      }
+    }
+
+    const confidence = maxMag / (secondMag + 1e-8)
+    // The energy gate prevents silence/noise from becoming arbitrary symbols.
+    // The relative gate rejects ambiguous carrier decisions.
+    const hasCarrier = energy > 1e-7 && maxMag > 1e-4 && confidence > 1.12
+    return { symbol: bestSym, confidence, signalEnergy: energy, hasCarrier }
   }
 
   public reset(): void {

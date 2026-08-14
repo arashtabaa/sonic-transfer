@@ -102,8 +102,10 @@ export function goertzelMagnitude(
   sampleRate: number,
 ): number {
   const N = samples.length
-  const k = Math.round((N * targetFreq) / sampleRate)
-  const omega = (2 * Math.PI * k) / N
+  // Goertzel is being used as a direct tone detector here, not as an FFT-bin
+  // lookup. Rounding to the nearest bin is incorrect for the configured
+  // carrier grid (most carriers intentionally fall between 25 Hz bins).
+  const omega = (2 * Math.PI * targetFreq) / sampleRate
   const cosine = Math.cos(omega)
   const coeff = 2 * cosine
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ModemProfileKey } from '~/acoustic'
+import { ModemProfileKey, SonicWaveformRenderer, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
+import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
@@ -25,6 +26,42 @@ async function startRealFileTransfer() {
   if (!store.storedData) return
   store.sessionStep = SessionStep.TRANSFERRING
   await store.startTransmission()
+}
+
+async function exportWavArtifact() {
+  const payload = store.storedData || generateTestPayload()
+  const renderResult = SonicWaveformRenderer.renderPayloadToPcm(
+    payload,
+    store.sendFilename || 'sonic-test-fixture.bin',
+    store.sendContentType || 'application/octet-stream',
+    store.selectedProfile,
+  )
+  const wavBlob = encodeWavBlob(renderResult.pcm, renderResult.sampleRate)
+  const url = URL.createObjectURL(wavBlob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `sonic-${store.sendFilename || 'test'}.wav`
+  a.click()
+}
+
+async function exportOggArtifact() {
+  const payload = store.storedData || generateTestPayload()
+  const renderResult = SonicWaveformRenderer.renderPayloadToPcm(
+    payload,
+    store.sendFilename || 'sonic-test-fixture.bin',
+    store.sendContentType || 'application/octet-stream',
+    store.selectedProfile,
+  )
+  try {
+    const oggBlob = await encodeOggOpusBlob(renderResult.pcm, renderResult.sampleRate)
+    const url = URL.createObjectURL(oggBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sonic-${store.sendFilename || 'test'}.ogg`
+    a.click()
+  } catch (e: any) {
+    alert(e.message || 'OGG/Opus export unsupported')
+  }
 }
 </script>
 
@@ -176,5 +213,32 @@ async function startRealFileTransfer() {
         </div>
       </div>
     </div>
+
+    <!-- Secondary Mode: Audio Artifact Lab (WAV / OGG Export) (Phase 4, 5, 11) -->
+    <Collapsable label="Advanced / Audio Artifact Lab (WAV & OGG Export)">
+      <div class="flex flex-col gap-4 p-2 text-xs font-mono">
+        <p class="text-neutral-400 font-sans">
+          Secondary diagnostic mode: Render the current payload into an offline WAV or OGG/Opus audio file using the exact same protocol frames and acoustic modem.
+        </p>
+
+        <div class="flex flex-wrap gap-3">
+          <button
+            class="flex items-center gap-2 rounded-lg bg-neutral-800 px-4 py-2 text-xs font-bold text-neutral-200 hover:bg-neutral-700 transition cursor-pointer"
+            @click="exportWavArtifact"
+          >
+            <span class="i-carbon-download text-sm text-blue-400" />
+            Export Sonic WAV (Lossless PCM)
+          </button>
+
+          <button
+            class="flex items-center gap-2 rounded-lg bg-neutral-800 px-4 py-2 text-xs font-bold text-neutral-200 hover:bg-neutral-700 transition cursor-pointer"
+            @click="exportOggArtifact"
+          >
+            <span class="i-carbon-download text-sm text-purple-400" />
+            Export Sonic OGG / Opus
+          </button>
+        </div>
+      </div>
+    </Collapsable>
   </div>
 </template>

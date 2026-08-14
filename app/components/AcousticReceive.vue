@@ -10,6 +10,24 @@ async function toggleReceive() {
     await store.startListening()
   }
 }
+
+async function importAudioFile(file?: File) {
+  if (!file) return
+  const arrayBuf = await file.arrayBuffer()
+  const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+  const ctx = new AudioCtx()
+  const audioBuffer = await ctx.decodeAudioData(arrayBuf)
+  const pcm = audioBuffer.getChannelData(0)
+
+  // Artifact PCM uses the same persistent streaming receiver as microphone data.
+  store.prepareArtifactDecoding(audioBuffer.sampleRate)
+  const chunkSize = 2048
+  for (let i = 0; i < pcm.length; i += chunkSize) {
+    const chunk = pcm.subarray(i, Math.min(pcm.length, i + chunkSize))
+    store.processCentralAudioData(chunk)
+  }
+  ctx.close()
+}
 </script>
 
 <template>
@@ -148,5 +166,15 @@ async function toggleReceive() {
       <h3 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-3">Microphone Signal Spectrum</h3>
       <SpectrumVisualizer :samples="store.liveSamples" :active="store.isListening" />
     </div>
+
+    <!-- Secondary Mode: Audio Artifact File Import (Phase 7) -->
+    <Collapsable label="Advanced / Decode Sonic Audio File (WAV / OGG / Opus)">
+      <div class="flex flex-col gap-4 p-2 text-xs font-mono">
+        <p class="text-neutral-400 font-sans">
+          Secondary diagnostic mode: Upload a recorded Sonic audio file (.wav, .ogg, .opus) to pass its decoded PCM samples directly into the central receiver DSP pipeline.
+        </p>
+        <InputFile text="Upload Audio Artifact (.wav, .ogg, .opus)" @file="importAudioFile" />
+      </div>
+    </Collapsable>
   </div>
 </template>
