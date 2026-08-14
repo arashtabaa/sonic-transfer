@@ -60,6 +60,35 @@ export interface LevelReportPayload {
   classification: LevelClassification
 }
 
+export interface FrequencyProbePayload {
+  protocolVersion: number
+  controlSessionId: number
+  calibrationNonce: number
+  probeSequence: number
+  frequenciesHz: number[]
+  toneDurationMs: number
+  guardMs: number
+  probeGain: number
+}
+
+export interface FrequencyMeasurementPayload {
+  frequencyHz: number
+  signalRms: number
+  noiseRms: number | null
+  snrDb: number | null
+  peak: number
+  usable: boolean
+  clipped: boolean
+}
+
+export interface FrequencyReportPayload {
+  protocolVersion: number
+  controlSessionId: number
+  calibrationNonce: number
+  probeSequence: number
+  measurements: FrequencyMeasurementPayload[]
+}
+
 const CALIBRATION_PHASES: CalibrationPhase[] = ['START_GAIN_SWEEP', 'LOCK_GAIN', 'SWITCH_DIRECTION', 'START_FREQUENCY_SCAN', 'FINISH', 'ABORT']
 const CALIBRATION_DIRECTIONS: CalibrationDirection[] = ['INITIATOR_TO_RESPONDER', 'RESPONDER_TO_INITIATOR']
 const LEVEL_CLASSIFICATIONS: LevelClassification[] = ['NOT_HEARD', 'TOO_WEAK', 'GOOD', 'TOO_LOUD', 'UNUSABLE']
@@ -86,6 +115,28 @@ export function decodeLevelReport(bytes: Uint8Array): LevelReportPayload | null 
     const p = parseObject(bytes) as LevelReportPayload
     const validNullable = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
     return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && isPositiveSequence(p.pingSequence) && Number.isFinite(p.signalPeak) && p.signalPeak >= 0 && Number.isFinite(p.signalRms) && p.signalRms >= 0 && validNullable(p.noiseRms) && (p.snrDb === null || (typeof p.snrDb === 'number' && Number.isFinite(p.snrDb))) && Number.isFinite(p.clippingFraction) && p.clippingFraction >= 0 && p.clippingFraction <= 1 && typeof p.crcValid === 'boolean' && LEVEL_CLASSIFICATIONS.includes(p.classification) ? p : null
+  } catch { return null }
+}
+
+export function encodeFrequencyProbe(payload: FrequencyProbePayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeFrequencyProbe(bytes: Uint8Array): FrequencyProbePayload | null {
+  try {
+    const p = parseObject(bytes) as FrequencyProbePayload
+    const frequenciesValid = Array.isArray(p.frequenciesHz) && p.frequenciesHz.length > 0 && p.frequenciesHz.length <= 64 && p.frequenciesHz.every(f => typeof f === 'number' && Number.isFinite(f) && f > 0 && f <= 96000)
+    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && isPositiveSequence(p.probeSequence) && frequenciesValid && Number.isFinite(p.toneDurationMs) && p.toneDurationMs >= 10 && p.toneDurationMs <= 500 && Number.isFinite(p.guardMs) && p.guardMs >= 0 && p.guardMs <= 250 && isGain(p.probeGain) ? p : null
+  } catch { return null }
+}
+
+export function encodeFrequencyReport(payload: FrequencyReportPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeFrequencyReport(bytes: Uint8Array): FrequencyReportPayload | null {
+  try {
+    const p = parseObject(bytes) as FrequencyReportPayload
+    if (p.protocolVersion !== PROTOCOL_VERSION || !isUint32(p.controlSessionId) || !isUint32(p.calibrationNonce) || !isPositiveSequence(p.probeSequence) || !Array.isArray(p.measurements) || p.measurements.length > 64) return null
+    for (const m of p.measurements) {
+      const nullable = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v) && v >= 0)
+      if (typeof m.frequencyHz !== 'number' || !Number.isFinite(m.frequencyHz) || m.frequencyHz <= 0 || typeof m.signalRms !== 'number' || !Number.isFinite(m.signalRms) || m.signalRms < 0 || !nullable(m.noiseRms) || (m.snrDb !== null && (typeof m.snrDb !== 'number' || !Number.isFinite(m.snrDb))) || typeof m.peak !== 'number' || !Number.isFinite(m.peak) || m.peak < 0 || typeof m.usable !== 'boolean' || typeof m.clipped !== 'boolean') return null
+    }
+    return p
   } catch { return null }
 }
 

@@ -9,13 +9,11 @@ import {
   encodeTestFileComplete,
   encodeTestFileStart,
   validateTestFileCompleteFrame,
-} from '../app/acoustic/protocol/frame'
-import {
   decodeFrequencyProbe,
   decodeFrequencyReport,
   encodeFrequencyProbe,
   encodeFrequencyReport,
-} from '../app/acoustic/transport/link-test'
+} from '../app/acoustic/protocol/frame'
 import { MetricsCollector } from '../app/acoustic/metrics/stats'
 import { analyzeToneWindow } from '../app/acoustic/dsp/spectral-estimator'
 import { AudioTransmitter } from '../app/acoustic/transport/audio-tx'
@@ -215,35 +213,40 @@ describe('Physical Transport & Protocol Codec Suite', () => {
     expect(packetDecode).toBe('FAIL') // Packet decode is independent of SNR!
   })
 
-  it('Frequency Probe/Report matching sessionId+probeId', () => {
+  it('strict Frequency Probe/Report codecs', () => {
     const probe = {
       protocolVersion: 1,
-      sessionId: 555,
-      probeId: 999,
-      targetFrequencyHz: 4000,
-      toneDurationMs: 500,
-      requestedGain: 0.7,
+      controlSessionId: 555,
+      calibrationNonce: 999,
+      probeSequence: 1,
+      frequenciesHz: [4000],
+      toneDurationMs: 80,
+      guardMs: 20,
+      probeGain: 0.7,
     }
     const probeBytes = encodeFrequencyProbe(probe)
     const decodedProbe = decodeFrequencyProbe(probeBytes)
 
     const report = {
-      sessionId: decodedProbe!.sessionId,
-      probeId: decodedProbe!.probeId,
-      requestedFrequency: decodedProbe!.targetFrequencyHz,
-      detectedFrequency: 3998.5,
-      freqError: 1.5,
-      signalRms: 0.045,
-      noiseFloor: 0.002,
-      snrDb: 27.0,
-      clipped: false,
-      carrierDetected: true,
+      protocolVersion: 1,
+      controlSessionId: decodedProbe!.controlSessionId,
+      calibrationNonce: decodedProbe!.calibrationNonce,
+      probeSequence: decodedProbe!.probeSequence,
+      measurements: [{
+        frequencyHz: 3998.5,
+        signalRms: 0.045,
+        noiseRms: 0.002,
+        snrDb: 27.0,
+        peak: 0.4,
+        usable: true,
+        clipped: false,
+      }],
     }
     const reportBytes = encodeFrequencyReport(report)
     const decodedReport = decodeFrequencyReport(reportBytes)
 
-    expect(decodedReport?.sessionId).toBe(probe.sessionId)
-    expect(decodedReport?.probeId).toBe(probe.probeId)
+    expect(decodedReport?.controlSessionId).toBe(probe.controlSessionId)
+    expect(decodedReport?.probeSequence).toBe(probe.probeSequence)
   })
 
   it('control-frame CRC corruption rejection', () => {

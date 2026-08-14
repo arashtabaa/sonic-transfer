@@ -2,6 +2,7 @@ import type { CalibrationDirection, LevelClassification, LevelReportPayload } fr
 import type { PilotMultitoneConfig } from '../modulation/pilot-multitone-modem'
 
 export type AdaptiveHandshakeState = 'IDLE' | 'BOOTSTRAP_CONTROL_LINK' | 'LOCAL_GAIN_SWEEP' | 'LOCAL_GAIN_LOCKED' | 'REMOTE_GAIN_SWEEP' | 'REMOTE_GAIN_LOCKED' | 'FREQUENCY_SCAN' | 'BAND_SELECTED' | 'PROFILE_NEGOTIATING' | 'PROFILE_VERIFYING' | 'READY' | 'FAILED' | 'ABORTED'
+export interface AdaptiveLinkContext { controlSessionId: number; calibrationNonce: number; role: 'INITIATOR' | 'RESPONDER'; startedAt: number }
 export type HandshakeFailure = 'CONTROL_LINK_NOT_HEARD' | 'SIGNAL_TOO_WEAK_AT_MAX_APP_GAIN' | 'FAST_UNAVAILABLE' | 'PROFILE_VERIFICATION_FAILED'
 
 export interface GainMeasurement { gain: number; classification: LevelClassification; snrDb: number | null; clippingFraction: number; crcValid: boolean }
@@ -52,6 +53,7 @@ export function selectGain(measurements: GainMeasurement[], policy: GainPolicy =
 }
 
 export function selectFrequencyBand(measurements: FrequencyMeasurement[], sampleRate: number, carrierCount = 8): SelectedBand | null {
+  if (![4, 8, 12, 16].includes(carrierCount)) return null
   const safe = measurements.filter(m => m.frequencyHz <= sampleRate / 2 - 1500 && m.usable && !m.clipped).sort((a, b) => a.frequencyHz - b.frequencyHz)
   if (safe.length < carrierCount) return null
   let best: FrequencyMeasurement[] = []

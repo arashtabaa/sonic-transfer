@@ -314,7 +314,10 @@ async function runCalibration() {
       <div class="grid grid-cols-1 gap-2 text-neutral-300 sm:grid-cols-2 lg:grid-cols-4">
         <span>Duplex: <strong class="text-blue-300">{{ store.duplexMode }}</strong></span>
         <span>Handshake: <strong class="text-emerald-300">{{ store.adaptiveHandshakeState }}</strong></span>
+        <span>Control session: <strong>{{ store.adaptiveLinkContext?.controlSessionId ?? 'unavailable' }}</strong></span>
         <span>App TX gain: <strong>{{ store.adaptiveLocalGain ?? 'unavailable' }}</strong></span>
+        <span>Candidate gain: <strong>{{ store.adaptiveCandidateGain ?? 'unavailable' }}</strong></span>
+        <span>Effective gain: <strong>{{ store.effectiveTxGain.toFixed(2) }}</strong></span>
         <span>Remote gain: <strong>{{ store.adaptiveRemoteGain ?? 'unavailable' }}</strong></span>
         <span>Selected band: <strong>{{ store.adaptiveSelectedBand ? `${store.adaptiveSelectedBand.startFreq}-${store.adaptiveSelectedBand.endFreq} Hz` : 'unavailable' }}</strong></span>
         <span>Profile: <strong>{{ store.selectedProfile }}</strong></span>

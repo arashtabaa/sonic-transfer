@@ -19,28 +19,6 @@ export interface LinkTestResult {
   message: string
 }
 
-export interface FrequencyProbePayload {
-  protocolVersion: number
-  sessionId: number
-  probeId: number
-  targetFrequencyHz: number
-  toneDurationMs: number
-  requestedGain: number
-}
-
-export interface FrequencyReportPayload {
-  sessionId: number
-  probeId: number
-  requestedFrequency: number
-  detectedFrequency: number | null
-  freqError: number | null
-  signalRms: number | null
-  noiseFloor: number | null
-  snrDb: number | null
-  clipped: boolean
-  carrierDetected: boolean
-}
-
 export interface ProfileProposalPayload {
   protocolVersion: number
   sessionId: number
@@ -90,21 +68,8 @@ export function validateProfileProposal(payload: ProfileProposalPayload, actualS
   return payload.config.sampleRate === payload.sampleRate && validateConfig(localConfig).valid
 }
 
-export function encodeFrequencyProbe(payload: FrequencyProbePayload): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(payload))
-}
-
-export function decodeFrequencyProbe(bytes: Uint8Array): FrequencyProbePayload | null {
-  try { return JSON.parse(new TextDecoder().decode(bytes)) } catch { return null }
-}
-
-export function encodeFrequencyReport(payload: FrequencyReportPayload): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(payload))
-}
-
-export function decodeFrequencyReport(bytes: Uint8Array): FrequencyReportPayload | null {
-  try { return JSON.parse(new TextDecoder().decode(bytes)) } catch { return null }
-}
+export { decodeFrequencyProbe, decodeFrequencyReport, encodeFrequencyProbe, encodeFrequencyReport } from '../protocol/frame'
+export type { FrequencyProbePayload, FrequencyReportPayload } from '../protocol/frame'
 
 export class AcousticLinkTester {
   /**

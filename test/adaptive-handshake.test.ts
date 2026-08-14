@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcousticFrameType, AdaptiveHandshakeRuntime, HALF_DUPLEX_TIMING, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
+import { AcousticFrameType, AdaptiveHandshakeRuntime, FrequencyProbeAnalyzer, FrequencyProbeRenderer, HALF_DUPLEX_TIMING, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeFrequencyProbe, decodeFrequencyReport, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeFrequencyProbe, encodeFrequencyReport, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
 
 const sha = 'a'.repeat(64)
 
@@ -31,10 +31,10 @@ describe('adaptive acoustic handshake V1', () => {
 
   it('selects a contiguous viable band and applies the Nyquist guard', () => {
     const measurements: FrequencyMeasurement[] = [6000, 8000, 10000, 12000, 14000, 16000, 18000].map(frequencyHz => ({ frequencyHz, signalRms: 0.1, noiseRms: 0.01, snrDb: frequencyHz < 14000 ? 20 : 2, peak: 0.4, usable: frequencyHz < 14000, clipped: false }))
-    const band = selectFrequencyBand(measurements, 48000, 3)
+    const band = selectFrequencyBand(measurements, 48000, 4)
     expect(band?.selectedStartFreq).toBe(6000)
-    expect(band?.selectedEndFreq).toBe(10000)
-    expect(selectFrequencyBand(measurements.map(m => ({ ...m, frequencyHz: 23000 })), 48000, 3)).toBeNull()
+    expect(band?.selectedEndFreq).toBe(12000)
+    expect(selectFrequencyBand(measurements.map(m => ({ ...m, frequencyHz: 23000 })), 48000, 4)).toBeNull()
   })
 
   it('records evidence-backed half-duplex dialogue and reaches READY only after profile verification', () => {
@@ -46,11 +46,11 @@ describe('adaptive acoustic handshake V1', () => {
     expect(runtime.lockLocalGain(good).selectedGain).toBe(0.26)
     runtime.beginRemoteGain()
     expect(runtime.lockRemoteGain(good).selectedGain).toBe(0.26)
-    const band = runtime.selectBand([6000, 8000, 10000].map(frequencyHz => ({ frequencyHz, signalRms: 0.1, noiseRms: 0.01, snrDb: 20, peak: 0.3, usable: true, clipped: false })), 48000, 3)
+    const band = runtime.selectBand([6000, 8000, 10000, 12000].map(frequencyHz => ({ frequencyHz, signalRms: 0.1, noiseRms: 0.01, snrDb: 20, peak: 0.3, usable: true, clipped: false })), 48000, 4)
     expect(band).not.toBeNull()
     runtime.beginProfileVerification()
     runtime.profileAccepted()
-    runtime.complete({ controlSessionId: 10, calibrationNonce: 20, localTxGain: 0.26, remoteTxGain: 0.26, selectedDataProfile: 'fast_data_experimental', modulationId: 'PILOT_MULTITONE_V2', startFreq: 6000, endFreq: 10000, carrierCount: 3, pilotInterval: 16, txSampleRate: 48000, rxSampleRate: 44100, configFingerprint: 'fingerprint-123', verificationClass: 'READY', createdAt: now })
+    runtime.complete({ controlSessionId: 10, calibrationNonce: 20, localTxGain: 0.26, remoteTxGain: 0.26, selectedDataProfile: 'fast_data_experimental', modulationId: 'PILOT_MULTITONE_V2', startFreq: 6000, endFreq: 12000, carrierCount: 4, pilotInterval: 16, txSampleRate: 48000, rxSampleRate: 44100, configFingerprint: 'fingerprint-123', verificationClass: 'READY', createdAt: now })
     expect(runtime.state).toBe('READY')
     expect(runtime.events.some(event => event.message.includes('Selected DATA band'))).toBe(true)
   })
@@ -65,5 +65,23 @@ describe('adaptive acoustic handshake V1', () => {
     expect(config.endFreq).toBe(12000)
     expect(fingerprintAdaptiveConfig(config)).toContain('"pilotInterval":8')
     expect(() => createAdaptivePilotConfig(44100, { selectedStartFreq: 6000, selectedEndFreq: 22050, selectedCarrierCount: 8 })).toThrow()
+  })
+
+  it('renders and analyzes a chunk-offset frequency probe through PCM', () => {
+    const probe = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, probeSequence: 1, frequenciesHz: [6000, 8000, 10000, 12000], toneDurationMs: 40, guardMs: 20, probeGain: 0.3 }
+    expect(decodeFrequencyProbe(encodeFrequencyProbe(probe))).toEqual(probe)
+    const rendered = new FrequencyProbeRenderer().render({ sampleRate: 44100, frequenciesHz: probe.frequenciesHz, toneDurationMs: probe.toneDurationMs, guardMs: probe.guardMs, gain: probe.probeGain })
+    const shifted = new Float32Array(rendered.samples.length + 7)
+    shifted.set(rendered.samples, 7)
+    const chunks: Float32Array[] = []
+    for (let i = 0; i < shifted.length; i += 257) chunks.push(shifted.subarray(i, Math.min(shifted.length, i + 257)))
+    const merged = new Float32Array(shifted.length)
+    let offset = 0
+    for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length }
+    const measurements = new FrequencyProbeAnalyzer({ sampleRate: 44100, frequenciesHz: probe.frequenciesHz, toneDurationMs: probe.toneDurationMs, guardMs: probe.guardMs }).analyze(merged, 7)
+    expect(measurements).toHaveLength(4)
+    expect(measurements.every(measurement => measurement.signalRms > 0.01)).toBe(true)
+    const report = { protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, probeSequence: 1, measurements }
+    expect(decodeFrequencyReport(encodeFrequencyReport(report))).toEqual(report)
   })
 })
