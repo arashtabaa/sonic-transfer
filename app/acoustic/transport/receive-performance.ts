@@ -1,5 +1,7 @@
 import { AUDIO_WORKLET_BATCH_SIZE, AudioBatchAccumulator } from './audio-batching'
 
+export const UI_SNAPSHOT_INTERVAL_MS = 80
+
 export interface ReceiveBenchmarkMetrics {
   durationSeconds: number
   sampleRate: number
@@ -30,6 +32,6 @@ export function runDeterministicReceiveBenchmark(durationSeconds = 30, sampleRat
     remainderSamples: totalSamples % batchSize,
     audioChunksPerSecond: emittedBatches / durationSeconds,
     audioSamplesPerSecond: totalSamples / durationSeconds,
-    uiSnapshotHz: 1000 / 80,
+    uiSnapshotHz: 1000 / UI_SNAPSHOT_INTERVAL_MS,
   }
 }

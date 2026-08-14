@@ -42,6 +42,10 @@ const sampleRate = computed(() => diagnosticsInfo.value?.audioContextSampleRate 
 const nyquist = computed(() => sampleRate.value / 2)
 const safeMaxFreq = computed(() => Math.max(1000, nyquist.value - 1500))
 
+function formatMetric(value: number | null, digits = 1) {
+  return value === null ? 'unavailable' : value.toFixed(digits)
+}
+
 onMounted(async () => {
   await refreshDevices()
   await fetchDiagnostics()
@@ -330,12 +334,12 @@ async function runCalibration() {
     <div class="rounded-xl border border-neutral-700 bg-neutral-900/70 p-4 font-mono text-xs">
       <div class="mb-3 text-10px font-sans font-bold uppercase tracking-wider text-neutral-400">Receive performance</div>
       <div class="grid grid-cols-2 gap-2 text-neutral-300 sm:grid-cols-3 lg:grid-cols-5">
-        <span>Audio chunks/s: <strong>{{ store.receivePerformance.audioChunksPerSecond.toFixed(1) }}</strong></span>
+        <span>Audio chunks/s: <strong>{{ formatMetric(store.receivePerformance.audioChunksPerSecond) }}</strong></span>
         <span>Samples/s: <strong>{{ Math.round(store.receivePerformance.audioSamplesPerSecond) }}</strong></span>
-        <span>DSP avg/p95/max: <strong>{{ store.receivePerformance.mainThreadDspMsAverage.toFixed(2) }}/{{ store.receivePerformance.mainThreadDspMsP95.toFixed(2) }}/{{ store.receivePerformance.maxDspMs.toFixed(2) }} ms</strong></span>
-        <span>Control/data: <strong>{{ store.receivePerformance.controlDecoderMs.toFixed(2) }}/{{ store.receivePerformance.dataDecoderMs.toFixed(2) }} ms/chunk</strong></span>
-        <span>UI refresh: <strong>{{ store.receivePerformance.uiVisualRefreshHz.toFixed(1) }} Hz</strong></span>
-        <span>Queue/dropped: <strong>{{ store.receivePerformance.audioQueueDepth }}/{{ store.receivePerformance.droppedAudioChunks }}</strong></span>
+        <span>DSP avg/p95/max: <strong>{{ formatMetric(store.receivePerformance.mainThreadDspMsAverage, 2) }}/{{ formatMetric(store.receivePerformance.mainThreadDspMsP95, 2) }}/{{ formatMetric(store.receivePerformance.maxDspMs, 2) }} ms</strong></span>
+        <span>Control/data: <strong>{{ formatMetric(store.receivePerformance.controlDecoderMs, 2) }}/{{ formatMetric(store.receivePerformance.dataDecoderMs, 2) }} ms/chunk</strong></span>
+        <span>UI refresh: <strong>{{ formatMetric(store.receivePerformance.uiVisualRefreshHz) }} Hz</strong></span>
+        <span>Queue/dropped: <strong>{{ formatMetric(store.receivePerformance.audioQueueDepth) }}/{{ formatMetric(store.receivePerformance.droppedAudioChunks) }}</strong></span>
       </div>
     </div>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { ModemProfileKey, SonicWaveformRenderer, benchmarkPayload, formatDuration, probeOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
+import { ModemProfileKey, SonicWaveformRenderer, benchmarkPayload, formatDuration, probeOggOpusSupport, encodeWavBlob, encodeOggOpusBlob, getProductSendState, type ProductSendState } from '~/acoustic'
 import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
@@ -34,14 +34,40 @@ async function startRealFileTransfer() {
 
 function humanHandshakeState(state: string) {
   const labels: Record<string, string> = {
-    BOOTSTRAP: 'Connecting',
-    CALIBRATING: 'Calibrating',
-    WAITING_FOR_LEVEL_REPORT: 'Checking audio level',
+    BOOTSTRAP_CONTROL_LINK: 'Connecting',
+    LOCAL_GAIN_SWEEP: "Adjusting this device's audio",
+    LOCAL_GAIN_LOCKED: 'Local audio calibrated',
+    REMOTE_GAIN_SWEEP: "Adjusting the other device's audio",
+    REMOTE_GAIN_LOCKED: 'Audio calibration complete',
+    PROFILE_NEGOTIATING: 'Verifying data link',
+    PROFILE_VERIFYING: 'Verifying data link',
     READY: 'Ready to send',
     FAILED: 'Connection failed',
   }
-  return labels[state] || 'Connecting'
+  return labels[state] || 'Waiting'
 }
+
+const productState = computed<ProductSendState>(() => getProductSendState({
+  hasFile: !!store.storedData,
+  handshakeState: store.adaptiveHandshakeState,
+  dataProfileReady: store.dataProfileReady,
+  transmitting: store.isTransmitting,
+  complete: store.sessionStep === SessionStep.COMPLETE,
+  failed: store.profileVerificationStatus === 'FAILED' || store.adaptiveHandshakeState === 'FAILED' || store.adaptiveHandshakeState === 'ABORTED',
+}))
+
+const productStateLabel = computed(() => ({
+  NO_FILE: 'Select a file',
+  FILE_SELECTED: 'Connect to receiver',
+  CONNECTING: 'Connecting…',
+  CALIBRATING_LOCAL: "Adjusting this device's audio…",
+  CALIBRATING_REMOTE: "Adjusting the other device's audio…",
+  VERIFYING_DATA_LINK: 'Verifying data link…',
+  LINK_READY: 'Link ready',
+  SENDING: 'Sending…',
+  COMPLETE: 'Transfer complete',
+  FAILED: 'Connection failed',
+}[productState.value]))
 
 async function verifySelectedDataProfile() {
   if (store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK) return
@@ -119,23 +145,30 @@ async function exportOggArtifact() {
           <span class="ml-auto shrink-0 text-xs text-neutral-400">{{ (store.sendTotalBytes / 1024).toFixed(1) }} KB</span>
         </div>
         <button
-          v-if="store.adaptiveHandshakeState !== 'READY'"
+          v-if="productState !== 'LINK_READY' && productState !== 'SENDING'"
           class="min-h-12 w-full rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50 sm:w-auto sm:self-start"
-          :disabled="store.adaptiveHandshakeState !== 'IDLE' && store.adaptiveHandshakeState !== 'FAILED'"
+          :disabled="!['FILE_SELECTED', 'FAILED'].includes(productState)"
           @click="store.startAdaptiveLink"
         >
-          {{ store.adaptiveHandshakeState === 'FAILED' ? 'Try connecting again' : 'Connect to receiver' }}
+          {{ productState === 'FAILED' ? 'Try again' : productState === 'FILE_SELECTED' ? 'Connect to receiver' : productStateLabel }}
         </button>
         <button
-          v-else
+          v-else-if="productState === 'LINK_READY'"
           class="min-h-12 w-full rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-500 sm:w-auto sm:self-start"
           @click="startRealFileTransfer"
         >
           Send file
         </button>
+        <button
+          v-else
+          class="min-h-12 w-full rounded-xl bg-red-600 px-5 py-3 text-sm font-bold text-white shadow-md hover:bg-red-500 sm:w-auto sm:self-start"
+          @click="store.stopTransmission"
+        >
+          Stop
+        </button>
       </div>
-      <p v-if="store.adaptiveHandshakeState !== 'IDLE'" class="text-xs text-emerald-300">
-        {{ humanHandshakeState(store.adaptiveHandshakeState) }}
+      <p v-if="productState !== 'FILE_SELECTED'" class="text-xs text-emerald-300">
+        {{ productState === 'VERIFYING_DATA_LINK' ? 'Verifying data link' : humanHandshakeState(store.adaptiveHandshakeState) }}
       </p>
     </div>
 

@@ -32,9 +32,18 @@ async function importAudioFile(file?: File) {
 const simpleStatus = computed(() => {
   if (store.downloadUrl) return { title: 'File received successfully', detail: 'SHA-256 verified', action: 'Receive another file' }
   if (store.receiveHeader) return { title: 'Receiving file…', detail: store.receiveHeader.filename, action: 'Stop' }
-  if (store.adaptiveHandshakeState !== 'IDLE' && store.adaptiveHandshakeState !== 'FAILED') return { title: 'Calibrating acoustic link…', detail: 'Finding a reliable audio level', action: 'Stop' }
+  if (store.profileVerificationStatus === 'UNVERIFIED' && store.gainCalibrationComplete) return { title: 'Verifying data link…', detail: 'Checking the production data profile', action: 'Stop' }
+  if (['LOCAL_GAIN_SWEEP', 'REMOTE_GAIN_SWEEP'].includes(store.adaptiveHandshakeState)) return { title: 'Calibrating audio…', detail: 'Finding a reliable audio level', action: 'Stop' }
+  if (store.dataProfileReady && store.isListening) return { title: 'Link ready', detail: 'Waiting for a nearby sender…', action: 'Stop' }
   if (store.isListening) return { title: 'Listening for nearby sender…', detail: 'Keep this page open and place the other device nearby.', action: 'Stop' }
   return { title: 'Receive a file', detail: 'Keep this page open and place the other device nearby.', action: 'Start Receiving' }
+})
+
+const activeDataBand = computed(() => {
+  const config = store.verifiedDataConfig as { startFreq?: number; endFreq?: number } | null
+  return config && typeof config.startFreq === 'number' && typeof config.endFreq === 'number'
+    ? { startFreq: config.startFreq, endFreq: config.endFreq }
+    : null
 })
 </script>
 
@@ -180,7 +189,13 @@ const simpleStatus = computed(() => {
     <Collapsable label="Advanced / Signal spectrum">
       <div class="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
         <h3 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-3">Microphone Signal Spectrum</h3>
-        <SpectrumVisualizer :samples="store.liveSamples" :active="store.isListening" :sample-rate="store.receiveSampleRate" />
+        <SpectrumVisualizer
+          :samples="store.liveSamples"
+          :active="store.isListening"
+          :sample-rate="store.receiveSampleRate"
+          :active-freq-start="activeDataBand?.startFreq"
+          :active-freq-end="activeDataBand?.endFreq"
+        />
       </div>
     </Collapsable>
 

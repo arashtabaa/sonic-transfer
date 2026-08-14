@@ -57,6 +57,11 @@ import {
   TransferCompletionCache,
   type ControlFrameObservation,
   type GainMeasurement,
+  UI_SNAPSHOT_INTERVAL_MS,
+  isGainCalibrationComplete,
+  isProductSendReady,
+  buildVerifiedDataProfileConfig,
+  fingerprintVerifiedDataProfile,
 } from '~/acoustic'
 import { classifyLevel } from '~/acoustic/transport/adaptive-handshake-runtime'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
@@ -214,7 +219,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   let decoderWorker: ReturnType<typeof createLTDecodeWorker> | null = null
   const metricsCollector = new MetricsCollector()
   const liveStats = ref(metricsCollector.getStats())
-  const receivePerformance = ref({ audioChunksPerSecond: 0, audioSamplesPerSecond: 0, mainThreadDspMsAverage: 0, mainThreadDspMsP95: 0, maxDspMs: 0, controlDecoderMs: 0, dataDecoderMs: 0, uiVisualRefreshHz: 0, audioQueueDepth: 0, droppedAudioChunks: 0 })
+  const receivePerformance = ref({ audioChunksPerSecond: 0, audioSamplesPerSecond: 0, mainThreadDspMsAverage: 0, mainThreadDspMsP95: 0, maxDspMs: 0, controlDecoderMs: 0, dataDecoderMs: 0, uiVisualRefreshHz: 0, audioQueueDepth: null as number | null, droppedAudioChunks: null as number | null })
   let statsInterval: any = null
   let perfWindowStartedAt = 0
   let perfAudioChunks = 0
@@ -233,6 +238,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const activeVerificationModulation = ref<'MFSK' | 'MULTITONE'>('MFSK')
   let rxSampleRateOverride: number | null = null
   let calibrationObservationCapture = false
+  let automaticProfileVerificationStarted = false
 
   // Modems: Dedicated ROBUST controlModem vs negotiated dataModem (Requirement 3 & 8)
   function getControlModem(sampleRate?: number): BFSKAcousticModem {
@@ -248,15 +254,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   }
 
   function currentProfileFingerprint(profile = selectedProfile.value, sampleRate = transmitter?.getSampleRate() || 48000, explicitConfig?: DataPhyConfig): string {
-    if (profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL) {
-      const config = explicitConfig ? { ...explicitConfig, sampleRate } : getPilotMultitoneConfig(sampleRate)
-      config.gain = effectiveTxGain.value
-      return JSON.stringify({ protocolVersion: 1, modulation: (config as any).modulationId || 'GUARDED_MULTITONE_V1', profile, startFreq: config.startFreq, endFreq: config.endFreq, carrierCount: config.carrierCount, symbolDurationMs: config.symbolDurationMs, guardMs: config.guardMs, gain: config.gain, txSampleRate: sampleRate })
-    }
-    const config = getProfileConfig(profile === ModemProfileKey.AUTO ? ModemProfileKey.BALANCED : profile, sampleRate)
-    config.gain = outputGain.value
-    return JSON.stringify({ protocolVersion: 1, modulation: 'MFSK-FSK-v1', profile, startFreq: config.startFreq, endFreq: config.endFreq, carrierCount: config.carrierCount, symbolDurationMs: config.symbolDurationMs, guardMs: config.guardMs, gain: config.gain, txSampleRate: sampleRate })
+    const config = explicitConfig || buildVerifiedDataProfileConfig(profile === ModemProfileKey.AUTO ? ModemProfileKey.BALANCED : profile, sampleRate, outputGain.value)
+    return fingerprintVerifiedDataProfile(profile, sampleRate, config)
   }
+
+  const gainCalibrationComplete = computed(() => isGainCalibrationComplete(adaptiveHandshakeState.value))
+  const dataProfileReady = computed(() => profileVerificationStatus.value === 'READY' && verifiedProfile.value !== null && verifiedDataConfig.value !== null)
+  const canSend = computed(() => isProductSendReady({ hasFile: storedData.value !== null, handshakeState: adaptiveHandshakeState.value, dataProfileReady: dataProfileReady.value }))
 
   function invalidateVerifiedProfile() {
     if (profileVerificationStatus.value === 'READY') profileVerificationStatus.value = 'UNVERIFIED'
@@ -266,7 +270,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     verifiedAt.value = null
   }
 
-  watch([selectedProfile, outputGain], invalidateVerifiedProfile)
+  watch(selectedProfile, nextProfile => {
+    if (profileVerificationStatus.value === 'READY' && verifiedProfile.value === nextProfile && verifiedDataConfig.value) return
+    invalidateVerifiedProfile()
+  })
+  watch(outputGain, invalidateVerifiedProfile)
 
   function ensureRxDecoders() {
     const rate = receiver?.getSampleRate() || rxSampleRateOverride || 48000
@@ -362,7 +370,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     perfDspMs.push(elapsed)
     if (perfDspMs.length > 512) perfDspMs.shift()
     const uiNow = typeof performance !== 'undefined' ? performance.now() : Date.now()
-    if (uiNow - lastUiSnapshotAt >= 66) {
+    if (uiNow - lastUiSnapshotAt >= UI_SNAPSHOT_INTERVAL_MS) {
       liveSamples.value = samples
       perfUiUpdates++
       lastUiSnapshotAt = uiNow
@@ -481,6 +489,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function startAdaptiveLink() {
     calibrationObservationCapture = true
+    automaticProfileVerificationStarted = false
+    profileVerificationStatus.value = 'UNVERIFIED'
+    verifiedProfile.value = null
+    verifiedConfigFingerprint.value = null
+    verifiedDataConfig.value = null
     adaptiveLinkContext.value = { controlSessionId: generateSecureRandomUint32(), calibrationNonce: generateSecureRandomUint32(), role: 'INITIATOR', startedAt: Date.now() }
     adaptiveCandidateGain.value = 0.12
     adaptiveController?.dispose()
@@ -677,15 +690,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
     const sampleRate = transmitter?.getSampleRate() || receiver?.getSampleRate() || 48000
     const verificationNonce = generateSecureRandomUint32()
+    const effectiveVerifiedGain = verifiedAdaptiveTxGain.value ?? outputGain.value
+    const config = buildVerifiedDataProfileConfig(profile, sampleRate, effectiveVerifiedGain, explicitConfig)
+    const configFingerprint = currentProfileFingerprint(profile, sampleRate, config)
     profileVerificationNonce.value = verificationNonce
     verifiedProfile.value = profile
-    verifiedConfigFingerprint.value = currentProfileFingerprint(profile, sampleRate, explicitConfig)
+    verifiedConfigFingerprint.value = configFingerprint
     profileVerificationStatus.value = 'UNVERIFIED'
     receivedProbeSequences.clear()
     profileVerificationReport.value = null
-    const config = explicitConfig ? { ...explicitConfig, sampleRate } : profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? getPilotMultitoneConfig(sampleRate) : getProfileConfig(profile, sampleRate)
-    const proposal = { protocolVersion: 1, sessionId: transferSessionId.value, verificationNonce, profile, sampleRate, config, probeCount, configFingerprint: currentProfileFingerprint(profile, sampleRate, config) }
-    proposal.config.gain = outputGain.value
+    const proposal = { protocolVersion: 1, sessionId: transferSessionId.value, verificationNonce, profile, sampleRate, config, probeCount, configFingerprint }
     verifiedDataConfig.value = { ...proposal.config }
     await transmitControlVerificationFrame(encodeFrame(transferSessionId.value, AcousticFrameType.PROFILE_PROPOSE, 1, encodeProfileProposal(proposal)))
     receiveMode.value = ReceiveMode.PROFILE_REPORT_WAIT
@@ -728,16 +742,29 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     return null
   }
 
+  async function continueAfterGainCalibration(): Promise<boolean> {
+    if (automaticProfileVerificationStarted || !storedData.value || !isGainCalibrationComplete(adaptiveHandshakeState.value)) return false
+    automaticProfileVerificationStarted = true
+    linkCheckMessage.value = 'Audio calibration complete; verifying the production data link...'
+    const verified = selectedProfile.value === ModemProfileKey.AUTO
+      ? (await verifyAutoProfile(30)) !== null
+      : await verifyDataProfile(selectedProfile.value, 30)
+    automaticProfileVerificationStarted = false
+    if (verified) linkCheckMessage.value = 'Production data link verified; the file is ready to send.'
+    return verified
+  }
+
   // --- Sender Transmission ---
   async function startTransmission(data?: Uint8Array, filename?: string, contentType?: string) {
     if (isTransmitting.value) return
-    if (profileVerificationStatus.value !== 'READY' || verifiedProfile.value !== selectedProfile.value || verifiedConfigFingerprint.value !== currentProfileFingerprint(selectedProfile.value, transmitter?.getSampleRate() || 48000)) {
+    const rawData = data || storedData.value
+    const sampleRate = transmitter?.getSampleRate() || verifiedDataConfig.value?.sampleRate || receiver?.getSampleRate() || 48000
+    const verifiedConfig = verifiedDataConfig.value
+    const expectedFingerprint = verifiedConfig ? currentProfileFingerprint(selectedProfile.value, sampleRate, verifiedConfig) : null
+    if (!rawData || profileVerificationStatus.value !== 'READY' || verifiedConfig === null || verifiedProfile.value !== selectedProfile.value || verifiedConfigFingerprint.value !== expectedFingerprint) {
       linkCheckMessage.value = `${selectedProfile.value} DATA profile is not READY; run production profile verification first.`
       return
     }
-
-    const rawData = data || storedData.value
-    if (!rawData) return
 
     sendFilename.value = filename || sendFilename.value || 'file.bin'
     sendContentType.value = contentType || sendContentType.value || 'application/octet-stream'
@@ -900,8 +927,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         controlDecoderMs: perfControlMs / Math.max(1, perfAudioChunks),
         dataDecoderMs: perfDataMs / Math.max(1, perfAudioChunks),
         uiVisualRefreshHz: perfUiUpdates / seconds,
-        audioQueueDepth: 0,
-        droppedAudioChunks: 0,
+        audioQueueDepth: null,
+        droppedAudioChunks: null,
       }
       perfWindowStartedAt = now
       perfAudioChunks = 0
@@ -1056,7 +1083,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       if (report && report.verificationNonce === profileVerificationNonce.value && report.sessionId === verificationSessionId.value && report.profile === verifiedProfile.value && report.configFingerprint === verifiedConfigFingerprint.value && report.classification === expectedClass && report.crcValid + report.crcInvalid === report.attemptedProbes) {
         profileVerificationReport.value = report
         profileVerificationStatus.value = report.classification
-        verifiedConfigFingerprint.value = currentProfileFingerprint(report.profile as ModemProfileKey, transmitter?.getSampleRate() || 48000)
+        verifiedConfigFingerprint.value = currentProfileFingerprint(report.profile as ModemProfileKey, transmitter?.getSampleRate() || 48000, verifiedDataConfig.value || undefined)
         verifiedAt.value = Date.now()
         linkCheckMessage.value = `${report.profile} DATA verification: ${report.classification} (${report.crcValid}/${report.attemptedProbes} CRC-valid probes)`
         if (receiver) receiver.stop()
@@ -1123,6 +1150,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         adaptiveHandshakeState.value = adaptiveHandshake.state
         adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
         linkCheckMessage.value = `Remote gain locked at ${command.lockedGain}; calibration complete.`
+        void continueAfterGainCalibration()
       } else if (command.phase === 'SWITCH_DIRECTION' && command.direction === 'RESPONDER_TO_INITIATOR') {
         if (!calibrationContextMatches(command)) return
         if (adaptiveHandshake.state !== 'LOCAL_GAIN_LOCKED') return
@@ -1147,6 +1175,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           adaptiveHandshakeState.value = adaptiveHandshake.state
           adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
           linkCheckMessage.value = `Remote gain locked at ${result.selectedGain}; calibration stops before frequency/profile negotiation.`
+          void continueAfterGainCalibration()
         })
       }
       return
@@ -1409,6 +1438,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     profileVerificationReport,
     liveStats,
     receivePerformance,
+    gainCalibrationComplete,
+    dataProfileReady,
+    canSend,
+    verifiedDataConfig,
+    verifiedProfile,
     processCentralAudioData,
     prepareArtifactDecoding,
     setFile,

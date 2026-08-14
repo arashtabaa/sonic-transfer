@@ -13,8 +13,8 @@ const props = withDefaults(defineProps<{
   samples: null,
   active: false,
   sampleRate: 48000,
-  activeFreqStart: 2000,
-  activeFreqEnd: 6000,
+  activeFreqStart: undefined,
+  activeFreqEnd: undefined,
   snrDb: null,
   height: 140,
 })
@@ -48,10 +48,12 @@ function drawSpectrum() {
   ctx.fillRect(0, 0, width, height)
 
   const nyquist = props.sampleRate / 2
-  const bandX1 = Math.max(0, Math.min(width, props.activeFreqStart / nyquist * width))
-  const bandX2 = Math.max(0, Math.min(width, props.activeFreqEnd / nyquist * width))
-  ctx.fillStyle = 'rgba(59, 130, 246, 0.15)'
-  ctx.fillRect(bandX1, 0, Math.max(2, bandX2 - bandX1), height)
+  if (props.activeFreqStart !== undefined && props.activeFreqEnd !== undefined) {
+    const bandX1 = Math.max(0, Math.min(width, props.activeFreqStart / nyquist * width))
+    const bandX2 = Math.max(0, Math.min(width, props.activeFreqEnd / nyquist * width))
+    ctx.fillStyle = 'rgba(59, 130, 246, 0.15)'
+    ctx.fillRect(bandX1, 0, Math.max(2, bandX2 - bandX1), height)
+  }
 
   ctx.strokeStyle = '#27272a'
   ctx.lineWidth = 1
@@ -81,7 +83,10 @@ function drawSpectrum() {
   }
   ctx.stroke()
   ctx.fillStyle = '#a1a1aa'
-  ctx.fillText(`0 Hz — ${(nyquist / 1000).toFixed(1)} kHz`, 8, 12)
+  const bandLabel = props.activeFreqStart !== undefined && props.activeFreqEnd !== undefined
+    ? `DATA band: ${Math.round(props.activeFreqStart)}–${Math.round(props.activeFreqEnd)} Hz`
+    : 'Control band / no verified DATA band'
+  ctx.fillText(`${bandLabel} · 0 Hz — ${(nyquist / 1000).toFixed(1)} kHz`, 8, 12)
   ctx.fillText(`SNR: ${props.snrDb === null || props.snrDb === undefined ? 'unavailable' : `${props.snrDb.toFixed(1)} dB`}`, Math.max(8, width - 145), 12)
   animationFrameId = requestAnimationFrame(drawSpectrum)
 }
@@ -115,7 +120,7 @@ onUnmounted(() => {
   <div class="relative w-full overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 shadow">
     <canvas ref="canvasRef" class="block h-35 w-full" />
     <div class="absolute bottom-2 left-3 text-xs font-mono text-neutral-400">
-      0 Hz → Nyquist · {{ props.snrDb === null || props.snrDb === undefined ? 'SNR: unavailable' : `SNR: ${props.snrDb.toFixed(1)} dB` }}
+      0 Hz → Nyquist · {{ props.activeFreqStart !== undefined && props.activeFreqEnd !== undefined ? `DATA band: ${Math.round(props.activeFreqStart)}–${Math.round(props.activeFreqEnd)} Hz` : 'Control band / no verified DATA band' }} · {{ props.snrDb === null || props.snrDb === undefined ? 'SNR: unavailable' : `SNR: ${props.snrDb.toFixed(1)} dB` }}
     </div>
   </div>
 </template>
