@@ -79,6 +79,7 @@ export enum SessionStep {
 export enum ReceiveMode {
   IDLE = 'IDLE',
   NORMAL_RECEIVE = 'NORMAL_RECEIVE',
+  CONTROL_LISTEN = 'CONTROL_LISTEN',
   LINK_ACK_WAIT = 'LINK_ACK_WAIT',
   LINK_PROBE_LISTEN = 'LINK_PROBE_LISTEN',
   TEST_COMPLETE_WAIT = 'TEST_COMPLETE_WAIT',
@@ -178,6 +179,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const isTransmitting = ref(false)
   const isListening = ref(false)
   const liveSamples = ref<Float32Array | null>(null)
+  const receiveSampleRate = ref(48000)
   const activePage = ref<'send' | 'receive' | 'idle'>('idle')
 
   // Stored File (Survives SPA Navigation)
@@ -212,7 +214,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   let decoderWorker: ReturnType<typeof createLTDecodeWorker> | null = null
   const metricsCollector = new MetricsCollector()
   const liveStats = ref(metricsCollector.getStats())
+  const receivePerformance = ref({ audioChunksPerSecond: 0, audioSamplesPerSecond: 0, mainThreadDspMsAverage: 0, mainThreadDspMsP95: 0, maxDspMs: 0, controlDecoderMs: 0, dataDecoderMs: 0, uiVisualRefreshHz: 0, audioQueueDepth: 0, droppedAudioChunks: 0 })
   let statsInterval: any = null
+  let perfWindowStartedAt = 0
+  let perfAudioChunks = 0
+  let perfAudioSamples = 0
+  let perfDspMs: number[] = []
+  let perfControlMs = 0
+  let perfDataMs = 0
+  let perfUiUpdates = 0
+  let lastUiSnapshotAt = 0
   let controlWindowTimer: ReturnType<typeof setTimeout> | null = null
   let wakeLock: any = null
   let controlRxDecoder: BFSKStreamDecoder | null = null
@@ -221,6 +232,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const verifiedDataConfig = ref<DataPhyConfig | null>(null)
   const activeVerificationModulation = ref<'MFSK' | 'MULTITONE'>('MFSK')
   let rxSampleRateOverride: number | null = null
+  let calibrationObservationCapture = false
 
   // Modems: Dedicated ROBUST controlModem vs negotiated dataModem (Requirement 3 & 8)
   function getControlModem(sampleRate?: number): BFSKAcousticModem {
@@ -260,6 +272,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     const rate = receiver?.getSampleRate() || rxSampleRateOverride || 48000
     if (!controlRxDecoder || controlRxDecoder.getSampleRate() !== rate) {
       controlRxDecoder = new BFSKStreamDecoder(getControlModem(rate))
+    }
+    controlRxDecoder.setObservationCaptureMode(calibrationObservationCapture ? 'CALIBRATION_ONLY' : 'OFF')
+    const dataModeActive = receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN
+    if (!dataModeActive) {
+      dataRxDecoder = null
+      negotiatedDataRxPhy = null
+      return
     }
     const profile = verifiedProfile.value || selectedProfile.value
     if (profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL) {
@@ -309,18 +328,25 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   // --- Central AudioReceiver Dispatcher (Requirement 3) ---
   function processCentralAudioData(samples: Float32Array) {
-    liveSamples.value = samples
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    perfAudioChunks++
+    perfAudioSamples += samples.length
+    if (!perfWindowStartedAt) perfWindowStartedAt = startedAt
     ensureRxDecoders()
 
     // 1. Control channel decode (ROBUST modem)
+    const controlStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const controlFrames = controlRxDecoder!.pushSamples(samples)
     const controlObservations = controlRxDecoder!.takeObservations()
+    perfControlMs += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - controlStartedAt
     for (const frame of controlFrames) {
       handleIncomingPacket(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload), controlObservations.find(observation => observation.frame === frame))
     }
+    ensureRxDecoders()
 
     // 2. Data channel decode (negotiated dataModem)
     if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN) {
+      const dataStartedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
       const dataFrames = (receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && activeVerificationModulation.value === 'MULTITONE') || verifiedProfile.value === ModemProfileKey.FAST_DATA_EXPERIMENTAL
         ? negotiatedDataRxPhy!.pushSamples(samples)
         : dataRxDecoder!.pushSamples(samples)
@@ -330,6 +356,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       for (const frame of dataFrames) {
         handleIncomingPacket(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
       }
+      perfDataMs += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - dataStartedAt
+    }
+    const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - startedAt
+    perfDspMs.push(elapsed)
+    if (perfDspMs.length > 512) perfDspMs.shift()
+    const uiNow = typeof performance !== 'undefined' ? performance.now() : Date.now()
+    if (uiNow - lastUiSnapshotAt >= 66) {
+      liveSamples.value = samples
+      perfUiUpdates++
+      lastUiSnapshotAt = uiNow
     }
   }
 
@@ -340,6 +376,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     dataRxDecoder = null
     negotiatedDataRxPhy = null
     rxSampleRateOverride = sampleRate
+    receiveSampleRate.value = sampleRate
     receiveMode.value = ReceiveMode.NORMAL_RECEIVE
     dspStage.value = 'SEARCHING_FOR_SIGNAL'
   }
@@ -443,6 +480,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   }
 
   function startAdaptiveLink() {
+    calibrationObservationCapture = true
     adaptiveLinkContext.value = { controlSessionId: generateSecureRandomUint32(), calibrationNonce: generateSecureRandomUint32(), role: 'INITIATOR', startedAt: Date.now() }
     adaptiveCandidateGain.value = 0.12
     adaptiveController?.dispose()
@@ -829,7 +867,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     decodedCount.value = 0
     totalBlocksReceived.value = 0
     dspStage.value = 'SEARCHING_FOR_SIGNAL'
-    receiveMode.value = ReceiveMode.NORMAL_RECEIVE
+    receiveMode.value = ReceiveMode.CONTROL_LISTEN
     metricsCollector.start()
 
     if (!receiver) {
@@ -839,6 +877,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     await receiver.start(selectedMicId.value || undefined)
+    receiveSampleRate.value = receiver.getSampleRate()
     controlRxDecoder = null
     dataRxDecoder = null
     negotiatedDataRxPhy = null
@@ -849,7 +888,29 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     statsInterval = setInterval(() => {
       liveStats.value = metricsCollector.getStats()
-    }, 250)
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
+      const seconds = Math.max(0.001, (now - perfWindowStartedAt) / 1000)
+      const sorted = [...perfDspMs].sort((a, b) => a - b)
+      receivePerformance.value = {
+        audioChunksPerSecond: perfAudioChunks / seconds,
+        audioSamplesPerSecond: perfAudioSamples / seconds,
+        mainThreadDspMsAverage: perfDspMs.length ? perfDspMs.reduce((sum, value) => sum + value, 0) / perfDspMs.length : 0,
+        mainThreadDspMsP95: sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]! : 0,
+        maxDspMs: sorted.length ? sorted[sorted.length - 1]! : 0,
+        controlDecoderMs: perfControlMs / Math.max(1, perfAudioChunks),
+        dataDecoderMs: perfDataMs / Math.max(1, perfAudioChunks),
+        uiVisualRefreshHz: perfUiUpdates / seconds,
+        audioQueueDepth: 0,
+        droppedAudioChunks: 0,
+      }
+      perfWindowStartedAt = now
+      perfAudioChunks = 0
+      perfAudioSamples = 0
+      perfDspMs = []
+      perfControlMs = 0
+      perfDataMs = 0
+      perfUiUpdates = 0
+    }, 1000)
   }
 
   function observeCalibrationPcm(observation: ControlFrameObservation | undefined, crcValid: boolean): { signalPeak: number; signalRms: number; noiseRms: null; snrDb: null; clippingFraction: number; classification: ReturnType<typeof classifyLevel> } {
@@ -1056,6 +1117,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           return
         }
         adaptiveHandshake.lockRemoteGain(calibrationEvidence)
+        calibrationObservationCapture = false
+        controlRxDecoder?.setObservationCaptureMode('OFF')
         adaptiveRemoteGain.value = command.lockedGain
         adaptiveHandshakeState.value = adaptiveHandshake.state
         adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
@@ -1079,6 +1142,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           verifiedAdaptiveTxGain.value = result.selectedGain
           await sendCalibrationCommand(adaptiveLinkContext.value!, 'LOCK_GAIN', 'RESPONDER_TO_INITIATOR', 4, result.selectedGain)
           adaptiveHandshake.lockRemoteGain(result.measurements)
+          calibrationObservationCapture = false
+          controlRxDecoder?.setObservationCaptureMode('OFF')
           adaptiveHandshakeState.value = adaptiveHandshake.state
           adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
           linkCheckMessage.value = `Remote gain locked at ${result.selectedGain}; calibration stops before frequency/profile negotiation.`
@@ -1209,6 +1274,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       fountainK.value = parsed.sessionHeader.totalFountainK
       expectedSha256.value = parsed.sessionHeader.sha256Hex || null
       dspStage.value = 'FRAME_RECEIVING'
+      receiveMode.value = ReceiveMode.NORMAL_RECEIVE
       if (decoderWorker) {
         await decoderWorker.createDecoder()
       }
@@ -1269,6 +1335,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function stopListening() {
     isListening.value = false
+    calibrationObservationCapture = false
+    controlRxDecoder?.setObservationCaptureMode('OFF')
     if (receiver) receiver.stop()
     if (statsInterval) {
       clearInterval(statsInterval)
@@ -1315,6 +1383,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     isTransmitting,
     isListening,
     liveSamples,
+    receiveSampleRate,
     activePage,
     storedData,
     sendFilename,
@@ -1339,6 +1408,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     profileVerificationStatus,
     profileVerificationReport,
     liveStats,
+    receivePerformance,
     processCentralAudioData,
     prepareArtifactDecoding,
     setFile,

@@ -32,6 +32,17 @@ async function startRealFileTransfer() {
   await store.startTransmission()
 }
 
+function humanHandshakeState(state: string) {
+  const labels: Record<string, string> = {
+    BOOTSTRAP: 'Connecting',
+    CALIBRATING: 'Calibrating',
+    WAITING_FOR_LEVEL_REPORT: 'Checking audio level',
+    READY: 'Ready to send',
+    FAILED: 'Connection failed',
+  }
+  return labels[state] || 'Connecting'
+}
+
 async function verifySelectedDataProfile() {
   if (store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK) return
   store.linkCheckMessage = 'Verifying selected DATA profile with CRC-valid probe frames...'
@@ -91,10 +102,44 @@ async function exportOggArtifact() {
   <div class="w-full flex flex-col gap-6">
     <!-- Header -->
     <div class="border-b border-neutral-800 pb-3">
-      <h2 class="text-xl font-bold text-neutral-100">Sonic Transfer Sender</h2>
-      <p class="text-xs text-neutral-400">Verify acoustic link and test transfer before selecting real files</p>
+      <h2 class="text-xl font-bold text-neutral-100">Send a file</h2>
+      <p class="text-xs text-neutral-400">Choose a file, connect to the nearby receiver, and send it.</p>
     </div>
 
+    <div class="rounded-2xl border border-emerald-500/30 bg-emerald-950/15 p-5 sm:p-6 flex flex-col gap-4">
+      <div>
+        <h3 class="text-base font-bold text-neutral-100">Choose a file</h3>
+        <p class="mt-1 text-xs text-neutral-400">The receiver will confirm when the transfer is complete.</p>
+      </div>
+      <InputFile v-if="!store.storedData" text="Select a file" @file="onFileSelected" />
+      <div v-else class="flex flex-col gap-3">
+        <div class="flex items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-950/60 p-3 min-w-0">
+          <span class="i-carbon-document-blank text-xl text-emerald-400 shrink-0" />
+          <span class="truncate text-sm font-medium text-neutral-100">{{ store.sendFilename }}</span>
+          <span class="ml-auto shrink-0 text-xs text-neutral-400">{{ (store.sendTotalBytes / 1024).toFixed(1) }} KB</span>
+        </div>
+        <button
+          v-if="store.adaptiveHandshakeState !== 'READY'"
+          class="min-h-12 w-full rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-500 disabled:opacity-50 sm:w-auto sm:self-start"
+          :disabled="store.adaptiveHandshakeState !== 'IDLE' && store.adaptiveHandshakeState !== 'FAILED'"
+          @click="store.startAdaptiveLink"
+        >
+          {{ store.adaptiveHandshakeState === 'FAILED' ? 'Try connecting again' : 'Connect to receiver' }}
+        </button>
+        <button
+          v-else
+          class="min-h-12 w-full rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-500 sm:w-auto sm:self-start"
+          @click="startRealFileTransfer"
+        >
+          Send file
+        </button>
+      </div>
+      <p v-if="store.adaptiveHandshakeState !== 'IDLE'" class="text-xs text-emerald-300">
+        {{ humanHandshakeState(store.adaptiveHandshakeState) }}
+      </p>
+    </div>
+
+    <Collapsable label="Advanced / Developer tools">
     <!-- Step 1: Acoustic Link Verification Card -->
     <div class="rounded-xl border border-neutral-800 bg-neutral-900/80 p-4 sm:p-5 flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-neutral-800 pb-3">
@@ -182,7 +227,7 @@ async function exportOggArtifact() {
       <div v-if="store.adaptiveHandshakeEvents.length" class="rounded-lg border border-emerald-500/30 bg-emerald-950/10 p-3 text-xs font-mono">
         <div class="mb-2 font-sans font-bold uppercase tracking-wider text-10px text-emerald-300">Acoustic dialogue · HALF_DUPLEX_TDD</div>
         <div v-for="(event, index) in store.adaptiveHandshakeEvents.slice(-6)" :key="`${event.atMs}-${index}`" class="flex gap-2 text-neutral-300">
-          <span class="text-emerald-400">{{ event.state }}</span>
+          <span class="text-emerald-400">{{ humanHandshakeState(event.state) }}</span>
           <span>{{ event.message }}</span>
         </div>
         <p class="mt-2 text-neutral-500">Application acoustic gain is negotiated. Device system volume is controlled by the user.</p>
@@ -221,8 +266,9 @@ async function exportOggArtifact() {
       </div>
     </div>
 
-    <!-- Step 3: Real File Selection (Locked until Test Transfer Passes) -->
+    <!-- Step 3 remains available only to the legacy developer workflow. -->
     <div
+      v-if="false"
       class="rounded-xl border p-4 sm:p-5 flex flex-col gap-4 transition"
       :class="(store.sessionStep !== SessionStep.TEST_TRANSFER_VERIFIED && store.sessionStep !== SessionStep.READY_FOR_FILE && store.sessionStep !== SessionStep.FILE_SELECTED && store.sessionStep !== SessionStep.TRANSFERRING) ? 'border-neutral-800 bg-neutral-950/40 opacity-50' : 'border-emerald-500/40 bg-neutral-900/80'"
     >
@@ -266,16 +312,17 @@ async function exportOggArtifact() {
         </div>
         <div v-if="throughputEstimate" class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs font-mono text-amber-200">
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <span>Profile: {{ throughputEstimate.profile }}</span>
-            <span>Useful rate: {{ throughputEstimate.sourceUsefulBitrate.toFixed(0) }} bit/s</span>
-            <span>Audio duration: {{ formatDuration(throughputEstimate.durationSeconds) }}</span>
+            <span>Profile: {{ throughputEstimate!.profile }}</span>
+            <span>Useful rate: {{ throughputEstimate!.sourceUsefulBitrate.toFixed(0) }} bit/s</span>
+            <span>Audio duration: {{ formatDuration(throughputEstimate!.durationSeconds) }}</span>
           </div>
-          <p v-if="throughputEstimate.durationSeconds > 120" class="mt-2 text-amber-300">
+        <p v-if="throughputEstimate!.durationSeconds > 120" class="mt-2 text-amber-300">
             Warning: this existing data profile will take a long time. This estimate is based on the generated PCM waveform; physical performance is unverified.
           </p>
         </div>
       </div>
     </div>
+    </Collapsable>
 
     <!-- Secondary Mode: Audio Artifact Lab (WAV / OGG Export) (Phase 4, 5, 11) -->
     <Collapsable label="Advanced / Audio Artifact Lab (WAV & OGG Export)">

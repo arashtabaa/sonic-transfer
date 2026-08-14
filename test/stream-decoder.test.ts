@@ -36,6 +36,13 @@ describe('BFSK persistent stream receiver', () => {
     }
   })
 
+  it('does not retain observation history by default', () => {
+    const modem = new BFSKAcousticModem(getProfileConfig(ModemProfileKey.ROBUST, 48000))
+    const decoder = new BFSKStreamDecoder(modem)
+    decoder.pushSamples(makeAudio(new Uint8Array([1, 2, 3])))
+    expect(decoder.takeObservations()).toEqual([])
+  })
+
   it('emits zero frames for silence-only PCM', () => {
     expect(decodeInChunks(new Float32Array(48000), [257, 1024, 4096])).toEqual([])
   })

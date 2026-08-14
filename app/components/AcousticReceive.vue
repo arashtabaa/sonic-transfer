@@ -28,28 +28,43 @@ async function importAudioFile(file?: File) {
   }
   ctx.close()
 }
+
+const simpleStatus = computed(() => {
+  if (store.downloadUrl) return { title: 'File received successfully', detail: 'SHA-256 verified', action: 'Receive another file' }
+  if (store.receiveHeader) return { title: 'Receiving file…', detail: store.receiveHeader.filename, action: 'Stop' }
+  if (store.adaptiveHandshakeState !== 'IDLE' && store.adaptiveHandshakeState !== 'FAILED') return { title: 'Calibrating acoustic link…', detail: 'Finding a reliable audio level', action: 'Stop' }
+  if (store.isListening) return { title: 'Listening for nearby sender…', detail: 'Keep this page open and place the other device nearby.', action: 'Stop' }
+  return { title: 'Receive a file', detail: 'Keep this page open and place the other device nearby.', action: 'Start Receiving' }
+})
 </script>
 
 <template>
   <div class="w-full flex flex-col gap-6">
+    <div class="rounded-2xl border border-blue-500/30 bg-blue-950/20 p-5 sm:p-6 flex flex-col gap-4">
+      <div>
+        <h1 class="text-xl font-bold text-neutral-100">{{ simpleStatus.title }}</h1>
+        <p class="mt-1 text-sm text-neutral-300 truncate">{{ simpleStatus.detail }}</p>
+      </div>
+      <button
+        class="min-h-12 w-full rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-md transition hover:bg-emerald-500 active:scale-95 disabled:opacity-50 sm:w-auto sm:self-start"
+        :class="store.isListening ? 'bg-red-600 hover:bg-red-500' : ''"
+        @click="toggleReceive"
+      >
+        {{ simpleStatus.action }}
+      </button>
+    </div>
+
     <!-- Receiver Action Card -->
     <div class="rounded-xl border border-neutral-800 bg-neutral-900/80 p-4 sm:p-5 flex flex-col gap-4">
       <div class="flex items-center justify-between gap-4 border-b border-neutral-800 pb-3 min-w-0">
         <div>
-          <h2 class="text-base font-bold text-neutral-100">Acoustic Audio Receiver</h2>
-          <p class="text-xs text-neutral-400">Microphone capture & DSP state machine pipeline</p>
+          <h2 class="text-base font-bold text-neutral-100">Receive</h2>
+          <p class="text-xs text-neutral-400">Automatic acoustic connection</p>
         </div>
-        <button
-          class="flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold text-white shadow-lg transition active:scale-95"
-          :class="store.isListening ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'"
-          @click="toggleReceive"
-        >
-          <span :class="store.isListening ? 'i-carbon-stop-filled' : 'i-carbon-microphone'" class="text-base" />
-          {{ store.isListening ? 'Stop Receiver' : 'Listen for Sonic Link' }}
-        </button>
       </div>
 
       <!-- Real DSP State Machine Pipeline Display -->
+      <Collapsable label="Technical details">
       <div class="rounded-xl border border-neutral-800 bg-neutral-950 p-4 flex flex-col gap-2 font-mono text-xs">
         <div class="flex items-center justify-between border-b border-neutral-800 pb-2 font-sans">
           <span class="text-neutral-400 font-bold uppercase tracking-wider text-10px">DSP Receiver Pipeline State</span>
@@ -87,6 +102,7 @@ async function importAudioFile(file?: File) {
           </div>
         </div>
       </div>
+      </Collapsable>
 
       <!-- Transmission Header Information Banner if detected -->
       <div v-if="store.receiveHeader" class="rounded-xl border border-blue-500/30 bg-blue-950/20 p-4 flex flex-col gap-2 font-mono text-xs min-w-0">
@@ -161,11 +177,12 @@ async function importAudioFile(file?: File) {
       </div>
     </div>
 
-    <!-- Live Receiver Spectrum Visualizer -->
-    <div class="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-3">Microphone Signal Spectrum</h3>
-      <SpectrumVisualizer :samples="store.liveSamples" :active="store.isListening" />
-    </div>
+    <Collapsable label="Advanced / Signal spectrum">
+      <div class="rounded-xl border border-neutral-800 bg-neutral-900/60 p-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-3">Microphone Signal Spectrum</h3>
+        <SpectrumVisualizer :samples="store.liveSamples" :active="store.isListening" :sample-rate="store.receiveSampleRate" />
+      </div>
+    </Collapsable>
 
     <!-- Secondary Mode: Audio Artifact File Import (Phase 7) -->
     <Collapsable label="Advanced / Decode Sonic Audio File (WAV / OGG / Opus)">

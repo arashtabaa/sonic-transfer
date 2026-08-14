@@ -53,6 +53,7 @@ class Device {
     const config = getProfileConfig(ModemProfileKey.ROBUST, sampleRate)
     this.tx = new BFSKAcousticModem(config)
     this.rx = new BFSKStreamDecoder(new BFSKAcousticModem({ ...config, sampleRate }))
+    this.rx.setObservationCaptureMode('CALIBRATION_ONLY')
     this.baseGain = config.gain
     this.runtime = new AdaptiveHandshakeRuntime(() => clock.now)
     this.context = { controlSessionId: 0x12345678, calibrationNonce: 0x55667788, role: name === 'A' ? 'INITIATOR' : 'RESPONDER', startedAt: 0 }

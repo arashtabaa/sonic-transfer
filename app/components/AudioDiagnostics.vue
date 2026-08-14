@@ -319,11 +319,23 @@ async function runCalibration() {
         <span>Candidate gain: <strong>{{ store.adaptiveCandidateGain ?? 'unavailable' }}</strong></span>
         <span>Effective gain: <strong>{{ store.effectiveTxGain.toFixed(2) }}</strong></span>
         <span>Remote gain: <strong>{{ store.adaptiveRemoteGain ?? 'unavailable' }}</strong></span>
-        <span>Gain SNR: <strong>SNR: unavailable</strong></span>
+        <span>Gain SNR: <strong>unavailable</strong></span>
         <span>Selected band: <strong>{{ store.adaptiveSelectedBand ? `${store.adaptiveSelectedBand.startFreq}-${store.adaptiveSelectedBand.endFreq} Hz` : 'unavailable' }}</strong></span>
         <span>Profile: <strong>{{ store.selectedProfile }}</strong></span>
         <span>Fingerprint: <strong>{{ store.adaptiveConfigFingerprint || 'unavailable' }}</strong></span>
         <span>Physical acoustic validation: <strong class="text-amber-300">NOT TESTED</strong></span>
+      </div>
+    </div>
+
+    <div class="rounded-xl border border-neutral-700 bg-neutral-900/70 p-4 font-mono text-xs">
+      <div class="mb-3 text-10px font-sans font-bold uppercase tracking-wider text-neutral-400">Receive performance</div>
+      <div class="grid grid-cols-2 gap-2 text-neutral-300 sm:grid-cols-3 lg:grid-cols-5">
+        <span>Audio chunks/s: <strong>{{ store.receivePerformance.audioChunksPerSecond.toFixed(1) }}</strong></span>
+        <span>Samples/s: <strong>{{ Math.round(store.receivePerformance.audioSamplesPerSecond) }}</strong></span>
+        <span>DSP avg/p95/max: <strong>{{ store.receivePerformance.mainThreadDspMsAverage.toFixed(2) }}/{{ store.receivePerformance.mainThreadDspMsP95.toFixed(2) }}/{{ store.receivePerformance.maxDspMs.toFixed(2) }} ms</strong></span>
+        <span>Control/data: <strong>{{ store.receivePerformance.controlDecoderMs.toFixed(2) }}/{{ store.receivePerformance.dataDecoderMs.toFixed(2) }} ms/chunk</strong></span>
+        <span>UI refresh: <strong>{{ store.receivePerformance.uiVisualRefreshHz.toFixed(1) }} Hz</strong></span>
+        <span>Queue/dropped: <strong>{{ store.receivePerformance.audioQueueDepth }}/{{ store.receivePerformance.droppedAudioChunks }}</strong></span>
       </div>
     </div>
 
