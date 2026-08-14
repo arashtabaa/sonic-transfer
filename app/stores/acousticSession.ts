@@ -34,6 +34,11 @@ import {
   decodeTransferStatus,
   encodeTransferPoll,
   decodeTransferPoll,
+  decodeCalibrationCommand,
+  decodeCalibrationPing,
+  decodeLevelReport,
+  encodeCalibrationCommand,
+  encodeLevelReport,
   getPilotMultitoneConfig,
   createDataTxPhy,
   createDataRxPhy,
@@ -50,6 +55,7 @@ import {
   AdaptiveHandshakeController,
   TransferCompletionCache,
 } from '~/acoustic'
+import { classifyLevel } from '~/acoustic/transport/adaptive-handshake-runtime'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
 import { createLTDecodeWorker } from '~/composables/lt-decode'
 import { EXPECTED_TEST_SHA256, generateTestPayload } from '~/constants/testPayload'
@@ -113,6 +119,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const sessionLifecycle = new SessionLifecycleRuntime()
   const adaptiveHandshake = new AdaptiveHandshakeRuntime()
   const transferCompletionCache = new TransferCompletionCache()
+  let adaptiveController: AdaptiveHandshakeController | null = null
   // --- Persistent Preferences ---
   const selectedProfile = useLocalStorage<ModemProfileKey>('sonic-profile', ModemProfileKey.BALANCED)
   const outputGain = useLocalStorage<number>('sonic-gain', 0.7)
@@ -386,21 +393,52 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }, 10000)
   }
 
+  function ensureAdaptiveController() {
+    if (adaptiveController) return adaptiveController
+    adaptiveController = new AdaptiveHandshakeController({
+      runtime: adaptiveHandshake,
+      transport: {
+        sendRobust: async (frame, gain) => { adaptiveCandidateGain.value = gain; await transmitAdaptiveControlFrame(frame) },
+        waitForLevelReport: (context, pingSequence, timeoutMs) => adaptiveController!.waitForLevelReport(context, pingSequence, timeoutMs),
+      },
+      setCandidateGain: gain => { adaptiveCandidateGain.value = gain },
+      eventSink: event => {
+        adaptiveHandshakeState.value = event.state
+        adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+        linkCheckMessage.value = event.message
+      },
+    })
+    return adaptiveController
+  }
+
+  async function beginInitiatorGainSweep() {
+    const context = adaptiveLinkContext.value
+    const controller = adaptiveController
+    if (!context || !controller) return
+    await sendCalibrationCommand(context, 'START_GAIN_SWEEP', 'INITIATOR_TO_RESPONDER', 1)
+    const result = await controller.runGainSweep(context, 'INITIATOR_TO_RESPONDER')
+    if (result.selectedGain === null) {
+      linkCheckMessage.value = 'Adaptive gain failed: no usable PCM level report at any candidate.'
+      return
+    }
+    adaptiveLocalGain.value = result.selectedGain
+    verifiedAdaptiveTxGain.value = result.selectedGain
+    adaptiveHandshake.lockLocalGain(result.measurements)
+    adaptiveHandshakeState.value = adaptiveHandshake.state
+    adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+    await sendCalibrationCommand(context, 'SWITCH_DIRECTION', 'RESPONDER_TO_INITIATOR', 2)
+    adaptiveHandshake.beginRemoteGain()
+    adaptiveHandshakeState.value = adaptiveHandshake.state
+    adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+    linkCheckMessage.value = `Local gain locked at ${result.selectedGain}; switched direction for remote gain sweep.`
+  }
+
   function startAdaptiveLink() {
     adaptiveLinkContext.value = { controlSessionId: generateSecureRandomUint32(), calibrationNonce: generateSecureRandomUint32(), role: 'INITIATOR', startedAt: Date.now() }
     adaptiveCandidateGain.value = 0.12
-    const controller = new AdaptiveHandshakeController({
-      runtime: adaptiveHandshake,
-      transport: {
-        sendRobust: async (frame, gain) => {
-          adaptiveCandidateGain.value = gain
-          await transmitControlVerificationFrame(frame)
-        },
-        waitForLevelReport: async () => null,
-      },
-      setCandidateGain: gain => { adaptiveCandidateGain.value = gain },
-      eventSink: event => { linkCheckMessage.value = event.message },
-    })
+    adaptiveController?.dispose()
+    adaptiveController = null
+    const controller = ensureAdaptiveController()
     controller.start(adaptiveLinkContext.value)
     adaptiveHandshakeState.value = adaptiveHandshake.state
     adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
@@ -543,6 +581,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     await transmitter.playFrame(modem.encode(frame))
     await transmitter.waitUntilDrained()
     transmitter.stop()
+  }
+
+  async function transmitAdaptiveControlFrame(frame: Uint8Array) {
+    if (receiver) receiver.stop()
+    receiveMode.value = ReceiveMode.CONTROL_RX_WINDOW
+    await transmitControlVerificationFrame(frame)
+    if (receiver) await receiver.start(selectedMicId.value || undefined)
   }
 
   async function transmitTransferFeedback(frame: Uint8Array) {
@@ -791,6 +836,38 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }, 250)
   }
 
+  function observeCalibrationPcm(crcValid: boolean): { signalPeak: number; signalRms: number; noiseRms: number | null; snrDb: number | null; clippingFraction: number; classification: ReturnType<typeof classifyLevel> } {
+    const samples = liveSamples.value
+    if (!samples || samples.length === 0) return { signalPeak: 0, signalRms: 0, noiseRms: null, snrDb: null, clippingFraction: 0, classification: 'NOT_HEARD' }
+    let sumSquares = 0
+    let peak = 0
+    let clipped = 0
+    let differenceSquares = 0
+    for (const sample of samples) {
+      const magnitude = Math.abs(sample)
+      sumSquares += sample * sample
+      peak = Math.max(peak, magnitude)
+      if (magnitude >= 0.98) clipped++
+    }
+    for (let index = 1; index < samples.length; index++) {
+      const difference = samples[index]! - samples[index - 1]!
+      differenceSquares += difference * difference
+    }
+    const signalRms = Math.sqrt(sumSquares / samples.length)
+    const noiseRms = samples.length > 1 ? Math.sqrt(differenceSquares / (2 * (samples.length - 1))) : null
+    const snrDb = noiseRms && noiseRms > 0 ? 20 * Math.log10(signalRms / noiseRms) : null
+    const clippingFraction = clipped / samples.length
+    return { signalPeak: peak, signalRms, noiseRms, snrDb, clippingFraction, classification: classifyLevel(signalRms, noiseRms, clippingFraction, crcValid) }
+  }
+
+  function calibrationContextMatches(payload: { controlSessionId: number; calibrationNonce: number }, context = adaptiveLinkContext.value): context is AdaptiveLinkContext {
+    return !!context && payload.controlSessionId === context.controlSessionId && payload.calibrationNonce === context.calibrationNonce && payload.controlSessionId === controlSessionId.value
+  }
+
+  async function sendCalibrationCommand(context: AdaptiveLinkContext, phase: 'START_GAIN_SWEEP' | 'SWITCH_DIRECTION', direction: 'INITIATOR_TO_RESPONDER' | 'RESPONDER_TO_INITIATOR', sequence: number) {
+    await transmitAdaptiveControlFrame(encodeFrame(context.controlSessionId, AcousticFrameType.CALIBRATION_COMMAND, sequence, encodeCalibrationCommand({ protocolVersion: 1, controlSessionId: context.controlSessionId, calibrationNonce: context.calibrationNonce, phase, direction, sequence })))
+  }
+
   async function handleIncomingPacket(packetBuffer: Uint8Array) {
     if (!packetizer) return
 
@@ -801,7 +878,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     const frameType = parsed.frame.frameType
-    const verificationFrame = frameType === AcousticFrameType.PROFILE_PROPOSE || frameType === AcousticFrameType.PROFILE_ACCEPT || frameType === AcousticFrameType.PROFILE_REJECT || frameType === AcousticFrameType.PROFILE_PROBE_END || frameType === AcousticFrameType.CHANNEL_REPORT || frameType === AcousticFrameType.LINK_PROBE || frameType === AcousticFrameType.LINK_ACK
+    const verificationFrame = frameType === AcousticFrameType.PROFILE_PROPOSE || frameType === AcousticFrameType.PROFILE_ACCEPT || frameType === AcousticFrameType.PROFILE_REJECT || frameType === AcousticFrameType.PROFILE_PROBE_END || frameType === AcousticFrameType.CHANNEL_REPORT || frameType === AcousticFrameType.LINK_PROBE || frameType === AcousticFrameType.LINK_ACK || frameType === AcousticFrameType.CALIBRATION_COMMAND || frameType === AcousticFrameType.CALIBRATION_PING || frameType === AcousticFrameType.LEVEL_REPORT
     const transferFrame = frameType === AcousticFrameType.SESSION_HEADER || frameType === AcousticFrameType.DATA || frameType === AcousticFrameType.END || frameType === AcousticFrameType.TEST_FILE_START || frameType === AcousticFrameType.TEST_FILE_COMPLETE
     if (!sessionLifecycle.acceptFrame(parsed.frame.sessionId, frameType)) return
     if (transferFrame && frameType !== AcousticFrameType.SESSION_HEADER && activeTransferSessionId.value !== null && parsed.frame.sessionId !== activeTransferSessionId.value) {
@@ -937,12 +1014,66 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       }
     }
 
+    if (parsed.frame.frameType === AcousticFrameType.CALIBRATION_COMMAND) {
+      const command = decodeCalibrationCommand(parsed.frame.payload)
+      if (!command || parsed.frame.sequence !== command.sequence || parsed.frame.sessionId !== command.controlSessionId) return
+      if (command.phase === 'START_GAIN_SWEEP' && command.direction === 'INITIATOR_TO_RESPONDER') {
+        const context: AdaptiveLinkContext = { controlSessionId: command.controlSessionId, calibrationNonce: command.calibrationNonce, role: 'RESPONDER', startedAt: Date.now() }
+        if (!adaptiveLinkContext.value) adaptiveLinkContext.value = context
+        if (!calibrationContextMatches(command, adaptiveLinkContext.value)) return
+        if (adaptiveHandshake.state === 'BOOTSTRAP_CONTROL_LINK') adaptiveHandshake.recordControlLink(true)
+        adaptiveHandshakeState.value = adaptiveHandshake.state
+        adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+        linkCheckMessage.value = 'Remote calibration command accepted; waiting for real PCM gain pings.'
+      } else if (command.phase === 'SWITCH_DIRECTION' && command.direction === 'RESPONDER_TO_INITIATOR') {
+        if (!calibrationContextMatches(command)) return
+        if (adaptiveHandshake.state !== 'LOCAL_GAIN_LOCKED') return
+        adaptiveHandshake.beginRemoteGain()
+        adaptiveHandshakeState.value = adaptiveHandshake.state
+        adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+        const controller = ensureAdaptiveController()
+        void controller.runGainSweep(adaptiveLinkContext.value!, 'RESPONDER_TO_INITIATOR').then(result => {
+          if (result.selectedGain === null) return
+          adaptiveRemoteGain.value = result.selectedGain
+          verifiedAdaptiveTxGain.value = result.selectedGain
+          adaptiveHandshake.lockRemoteGain(result.measurements)
+          adaptiveHandshakeState.value = adaptiveHandshake.state
+          adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+          linkCheckMessage.value = `Remote gain locked at ${result.selectedGain}; calibration stops before frequency/profile negotiation.`
+        })
+      }
+      return
+    }
+
+    if (parsed.frame.frameType === AcousticFrameType.CALIBRATION_PING) {
+      const ping = decodeCalibrationPing(parsed.frame.payload)
+      const context = ping && calibrationContextMatches(ping)
+      if (!ping || !context || parsed.frame.sessionId !== ping.controlSessionId || parsed.frame.sequence !== ping.pingSequence) return
+      const observation = observeCalibrationPcm(true)
+      await transmitAdaptiveControlFrame(encodeFrame(ping.controlSessionId, AcousticFrameType.LEVEL_REPORT, ping.pingSequence, encodeLevelReport({ protocolVersion: 1, controlSessionId: ping.controlSessionId, calibrationNonce: ping.calibrationNonce, pingSequence: ping.pingSequence, ...observation, crcValid: true })))
+      return
+    }
+
+    if (parsed.frame.frameType === AcousticFrameType.LEVEL_REPORT) {
+      const report = decodeLevelReport(parsed.frame.payload)
+      const contextMatches = report ? calibrationContextMatches(report) : false
+      if (report && contextMatches && parsed.frame.sessionId === report.controlSessionId && parsed.frame.sequence === report.pingSequence) adaptiveController?.acceptLevelReport(adaptiveLinkContext.value!, report)
+      return
+    }
+
     // Requirement 4 & 5: Handle LINK_PROBE and send LINK_ACK with half-duplex turnaround
     if (parsed.frame.frameType === AcousticFrameType.LINK_PROBE) {
       const probePayload = AcousticLinkTester.parseProbePayload(parsed.frame.payload)
       if (probePayload) {
         controlSessionId.value = probePayload.sessionId
         sessionLifecycle.beginControl(probePayload.sessionId)
+        if (!adaptiveLinkContext.value) {
+          adaptiveLinkContext.value = { controlSessionId: probePayload.sessionId, calibrationNonce: probePayload.nonce, role: 'RESPONDER', startedAt: Date.now() }
+          const controller = ensureAdaptiveController()
+          controller.start(adaptiveLinkContext.value)
+          adaptiveHandshakeState.value = adaptiveHandshake.state
+          adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+        }
         if (receiver) receiver.stop()
 
         setTimeout(async () => {
@@ -980,9 +1111,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         }
         sessionStep.value = SessionStep.LINK_VERIFIED
         linkCheckMessage.value = `LINK VERIFIED! Real acoustic ACK received (Session: ${ack.sessionId}, Nonce: ${ack.nonce}).`
-        if (receiver) receiver.stop()
-        receiveMode.value = ReceiveMode.IDLE
-        activeProbeNonce.value = null
+        receiveMode.value = ReceiveMode.CONTROL_RX_WINDOW
+        void beginInitiatorGainSweep()
       }
     }
 

@@ -32,6 +32,8 @@ export class SessionLifecycleRuntime {
 
   acceptFrame(sessionId: number, frameType: AcousticFrameType): boolean {
     if (frameType === AcousticFrameType.LINK_PROBE || frameType === AcousticFrameType.LINK_ACK) return this.controlSessionId === null || this.controlSessionId === sessionId
+    const calibration = [AcousticFrameType.CALIBRATION_COMMAND, AcousticFrameType.CALIBRATION_PING, AcousticFrameType.LEVEL_REPORT]
+    if (calibration.includes(frameType)) return this.controlSessionId !== null && this.controlSessionId === sessionId
     const verification = [AcousticFrameType.PROFILE_PROPOSE, AcousticFrameType.PROFILE_ACCEPT, AcousticFrameType.PROFILE_REJECT, AcousticFrameType.PROFILE_PROBE_END, AcousticFrameType.CHANNEL_REPORT]
     if (verification.includes(frameType)) return this.verificationSessionId === null || this.verificationSessionId === sessionId
     if (frameType === AcousticFrameType.SESSION_HEADER) return this.activeTransferSessionId === null || this.activeTransferSessionId === sessionId || this.completedTransferSessionId === this.activeTransferSessionId

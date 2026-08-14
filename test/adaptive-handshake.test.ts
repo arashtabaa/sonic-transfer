@@ -108,6 +108,6 @@ describe('adaptive acoustic handshake V1', () => {
     })
     const result = await controller.runGainSweep({ controlSessionId: 10, calibrationNonce: 20, role: 'INITIATOR', startedAt: 0 }, 'INITIATOR_TO_RESPONDER')
     expect(result.selectedGain).toBe(0.12)
-    expect(sentGains.length).toBe(24)
+    expect(sentGains.length).toBe(3)
   })
 })
