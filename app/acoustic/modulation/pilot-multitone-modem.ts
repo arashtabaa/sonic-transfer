@@ -143,7 +143,7 @@ export class PilotMultitoneStreamDecoder {
 
   private findPreamble(): number {
     const need = this.modem.stride * (PREAMBLE_SIGNS.length + 2)
-    for (let offset = 0; offset <= this.buffer.length - need; offset += 2) {
+    for (let offset = 0; offset <= this.buffer.length - need; offset++) {
       const channel = this.modem.estimateChannel(this.buffer, offset, this.symbolOffset(offset, 1) - offset)
       if (channel.some(c => !c.usable)) continue
       let valid = true
@@ -185,7 +185,7 @@ export class PilotMultitoneStreamDecoder {
       if (bytes.length < 16) continue
       const total = 16 + ((bytes[14]! << 8) | bytes[15]!) + 4
       if (bytes.length * 8 < total * 8) continue
-      return { frame: decodeFrame(bytes.subarray(0, total)), consumed: (symbol + FRAME_GAP_SYMBOLS) * this.modem.stride }
+      return { frame: decodeFrame(bytes.subarray(0, total)), consumed: Math.round((symbol + FRAME_GAP_SYMBOLS) * this.modem.timingStride) }
     }
   }
 

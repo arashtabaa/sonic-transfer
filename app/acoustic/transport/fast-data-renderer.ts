@@ -2,12 +2,15 @@ import { appendFileHeaderMetaToBuffer, blockToBinary, createEncoder } from 'luby
 import { AcousticPacketizer } from '../framing/packetizer'
 import { AcousticFrameType, encodeFrame } from '../protocol/frame'
 import { ModemProfileKey } from '../modulation/modem'
+import { getFastDataConfig } from '../modulation/parallel-multitone-modem'
 import { createDataTxPhy } from './data-phy'
+import type { DataPhyConfig } from './data-phy'
 
-export interface FastRenderedWaveform { pcm: Float32Array; sampleRate: number; durationSec: number; totalFrames: number; sourceBlocks: number; transmittedBlocks: number }
+export interface FastRenderedWaveform { pcm: Float32Array; sampleRate: number; durationSec: number; totalFrames: number; sourceBlocks: number; transmittedBlocks: number; profile: ModemProfileKey; modulationId: string; config: DataPhyConfig }
 
-export function renderFastPayloadToPcm(data: Uint8Array, filename = 'file.bin', contentType = 'application/octet-stream', sampleRate = 48000, extraBlocks?: number): FastRenderedWaveform {
-  const modem = createDataTxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, sampleRate)
+export function renderFastPayloadToPcm(data: Uint8Array, filename = 'file.bin', contentType = 'application/octet-stream', sampleRate = 48000, extraBlocks?: number, phyConfig?: DataPhyConfig): FastRenderedWaveform {
+  const config = phyConfig || getFastDataConfig(sampleRate)
+  const modem = createDataTxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, sampleRate, config)
   const sessionId = 0x534f4e49
   const packetizer = new AcousticPacketizer(sessionId)
   const canonical = appendFileHeaderMetaToBuffer(data, { filename, contentType })
@@ -24,5 +27,5 @@ export function renderFastPayloadToPcm(data: Uint8Array, filename = 'file.bin', 
   const totalSamples = frames.reduce((sum, frame) => sum + frame.length, 0)
   const pcm = new Float32Array(totalSamples); let offset = 0
   for (const frame of frames) { pcm.set(frame, offset); offset += frame.length }
-  return { pcm, sampleRate, durationSec: totalSamples / sampleRate, totalFrames: frames.length, sourceBlocks: encoder.k, transmittedBlocks: encoder.k + redundancy }
+  return { pcm, sampleRate, durationSec: totalSamples / sampleRate, totalFrames: frames.length, sourceBlocks: encoder.k, transmittedBlocks: encoder.k + redundancy, profile: ModemProfileKey.FAST_DATA_EXPERIMENTAL, modulationId: (config as any).modulationId || 'GUARDED_MULTITONE_V1', config }
 }

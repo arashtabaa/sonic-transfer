@@ -21,14 +21,26 @@ import { analyzeToneWindow } from '../app/acoustic/dsp/spectral-estimator'
 import { AudioTransmitter } from '../app/acoustic/transport/audio-tx'
 import { EXPECTED_TEST_SHA256 } from '../app/constants/testPayload'
 
+function testAudioContext(): AudioContext {
+  return {
+    sampleRate: 48000,
+    state: 'running',
+    destination: {} as any,
+    createGain: () => ({ gain: { value: 1 }, connect: () => {} } as any),
+    createBuffer: () => ({ copyToChannel: () => {} } as any),
+    createBufferSource: () => ({ buffer: null, connect: () => {}, start: function(this: any) { setTimeout(() => this.onended && this.onended(), 10) }, onended: null } as any),
+    resume: async () => {},
+  } as any
+}
+
 describe('Physical Transport & Protocol Codec Suite', () => {
   it('Worklet in-flight drain state and queue completion', () => {
-    const tx = new AudioTransmitter({ sampleRate: 48000 })
+    const tx = new AudioTransmitter({ sampleRate: 48000, audioContextFactory: testAudioContext })
     expect(tx.isQueueEmpty()).toBe(true)
   })
 
   it('cancelled playFrame does not resolve as success on stop', async () => {
-    const tx = new AudioTransmitter({ sampleRate: 48000 })
+    const tx = new AudioTransmitter({ sampleRate: 48000, audioContextFactory: testAudioContext })
     await tx.start()
     const playPromise = tx.playFrame({ samples: new Float32Array(512), durationMs: 10 })
     tx.stop()

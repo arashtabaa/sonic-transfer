@@ -60,6 +60,14 @@ export interface TestFileCompletePayload {
   pass: boolean
 }
 
+export interface TransferStatusPayload { protocolVersion: number; transferSessionId: number; blocksReceived: number; decodedCount: number; complete: boolean }
+export interface TransferEndPayload { protocolVersion: number; transferSessionId: number; expectedSha256: string; actualSha256: string; pass: boolean; blocksReceived: number }
+
+export function encodeTransferStatus(payload: TransferStatusPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeTransferStatus(bytes: Uint8Array): TransferStatusPayload | null { try { const p = JSON.parse(new TextDecoder().decode(bytes)); return p.protocolVersion === 1 && Number.isInteger(p.transferSessionId) && Number.isInteger(p.blocksReceived) && Number.isInteger(p.decodedCount) && typeof p.complete === 'boolean' ? p : null } catch { return null } }
+export function encodeTransferEnd(payload: TransferEndPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeTransferEnd(bytes: Uint8Array): TransferEndPayload | null { try { const p = JSON.parse(new TextDecoder().decode(bytes)); return p.protocolVersion === 1 && Number.isInteger(p.transferSessionId) && typeof p.expectedSha256 === 'string' && typeof p.actualSha256 === 'string' && typeof p.pass === 'boolean' && Number.isInteger(p.blocksReceived) ? p : null } catch { return null } }
+
 export interface ProfileProbePayload {
   protocolVersion: number
   sessionId: number

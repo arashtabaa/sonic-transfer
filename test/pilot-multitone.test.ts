@@ -31,16 +31,19 @@ describe('pilot-assisted constant-power multitone V2', () => {
       snr15: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 15, impairment: { snrDb: 15 } }),
       clockPlus100: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 101, impairment: { clockDriftPpm: 100 } }),
       clockMinus100: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 102, impairment: { clockDriftPpm: -100 } }),
-      detunePlus10: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 103, impairment: { dopplerPpm: 0, delaySamples: 0 } }),
       echo: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 104, impairment: { echo: { delaySamples: 96, gain: 0.25 } } }),
       dropout100: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 105, impairment: { dropoutMs: 100 } }),
       dropout250: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 106, impairment: { dropoutMs: 250 } }),
       dropout500: applySyntheticChannel({ pcm, sampleRate: 48000, seed: 107, impairment: { dropoutMs: 500 } }),
     }
     const results: Record<string, number> = {}
+    const decode = (signal: Float32Array, rxConfig = config) => new PilotMultitoneStreamDecoder(new PilotMultitoneModem(rxConfig)).pushSamples(signal).length
     for (const [name, signal] of Object.entries(cases)) {
-      const decoder = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(config))
-      results[name] = decoder.pushSamples(signal).length
+      results[name] = decode(signal)
+    }
+    for (const [name, offset] of [['detunePlus10', 10], ['detuneMinus10', -10], ['detunePlus25', 25], ['detuneMinus25', -25]] as const) {
+      const rxConfig = { ...config, startFreq: config.startFreq + offset, endFreq: config.endFreq + offset }
+      results[name] = decode(pcm, rxConfig)
     }
     console.log('PILOT_MULTITONE_V2_IMPAIRMENTS', JSON.stringify(results))
     expect(results.clean).toBe(1)
@@ -55,4 +58,5 @@ describe('pilot-assisted constant-power multitone V2', () => {
     for (let i = 0; i < resampled.length; i++) { const source = i * 48000 / 44100; const left = Math.floor(source); const fraction = source - left; resampled[i] = (tx[left] || 0) * (1 - fraction) + (tx[Math.min(left + 1, tx.length - 1)] || 0) * fraction }
     expect(rx.pushSamples(resampled).map(frame => frame.sequence)).toEqual([10])
   })
+
 })

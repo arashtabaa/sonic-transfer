@@ -3,6 +3,7 @@ import type { AudioFrame } from '../modulation/modem'
 interface AudioTxOptions {
   sampleRate?: number
   gain?: number
+  audioContextFactory?: () => AudioContext
 }
 
 interface QueuedFrameItem {
@@ -38,20 +39,13 @@ export class AudioTransmitter {
   public async start(): Promise<void> {
     if (!this.audioContext) {
       const sampleRate = this.options.sampleRate || 48000
-      if (typeof window !== 'undefined' && (window.AudioContext || (window as any).webkitAudioContext)) {
+      if (this.options.audioContextFactory) {
+        this.audioContext = this.options.audioContextFactory()
+      } else if (typeof window !== 'undefined' && (window.AudioContext || (window as any).webkitAudioContext)) {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
         this.audioContext = new AudioCtx({ sampleRate })
       } else {
-        // Mock headless AudioContext for Node unit tests
-        this.audioContext = {
-          sampleRate,
-          state: 'running',
-          destination: {} as any,
-          createGain: () => ({ gain: { value: 1 }, connect: () => {} } as any),
-          createBuffer: () => ({ copyToChannel: () => {} } as any),
-          createBufferSource: () => ({ buffer: null, connect: () => {}, start: function() { setTimeout(() => this.onended && this.onended(), 10) }, onended: null } as any),
-          resume: async () => {},
-        } as any
+        throw new Error('Web Audio API is unavailable; inject audioContextFactory for tests')
       }
     }
 

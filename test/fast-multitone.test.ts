@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import { createDecoder, readFileHeaderMetaFromBuffer } from '../packages/luby-transform/src'
-import { AcousticFrameType, AcousticPacketizer, decodeWavPcm, encodeFrame, encodeWavBlob, getFastDataConfig, ParallelMultitoneModem, ParallelMultitoneStreamDecoder, renderFastPayloadToPcm } from '../app/acoustic'
+import { AcousticFrameType, AcousticPacketizer, createDataRxPhy, decodeWavPcm, encodeFrame, encodeWavBlob, getFastDataConfig, getPilotMultitoneConfig, ModemProfileKey, ParallelMultitoneModem, ParallelMultitoneStreamDecoder, renderFastPayloadToPcm } from '../app/acoustic'
 import { generateTestPayload } from '../app/constants/testPayload'
 
 function concat(...parts: Float32Array[]): Float32Array {
@@ -59,5 +59,41 @@ describe('FAST_DATA_EXPERIMENTAL guarded parallel multitone', () => {
     expect(reconstructed).not.toBeNull()
     expect(createHash('sha256').update(reconstructed!).digest('hex')).toBe(createHash('sha256').update(payload).digest('hex'))
     expect(rendered.durationSec).toBeGreaterThan(0)
+  }, 120000)
+
+  it('reconstructs the 8 KiB fixture through explicit PILOT_MULTITONE_V2 artifact PCM', async () => {
+    const payload = generateTestPayload()
+    const config = getPilotMultitoneConfig(48000)
+    const rendered = renderFastPayloadToPcm(payload, 'sonic-test-fixture.bin', 'application/octet-stream', 48000, 10, config)
+    expect(rendered.modulationId).toBe('PILOT_MULTITONE_V2')
+    const decoder = createDataRxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, rendered.sampleRate, config)
+    const frames = decoder.pushSamples(rendered.pcm)
+    const packetizer = new AcousticPacketizer()
+    const fountain = createDecoder()
+    let reconstructed: Uint8Array | null = null
+    for (const frame of frames) {
+      const parsed = packetizer.parseIncomingBuffer(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
+      if (parsed.fountainBlock && fountain.addBlock(parsed.fountainBlock)) { const [bytes] = readFileHeaderMetaFromBuffer(fountain.getDecoded()!); reconstructed = bytes; break }
+    }
+    expect(reconstructed).not.toBeNull()
+    expect(createHash('sha256').update(reconstructed!).digest('hex')).toBe(createHash('sha256').update(payload).digest('hex'))
+  }, 120000)
+
+  it('reconstructs the 8 KiB fixture through explicit PILOT_MULTITONE_V2 WAV', async () => {
+    const payload = generateTestPayload()
+    const config = getPilotMultitoneConfig(48000)
+    const rendered = renderFastPayloadToPcm(payload, 'sonic-test-fixture.bin', 'application/octet-stream', 48000, 10, config)
+    const wav = encodeWavBlob(rendered.pcm, rendered.sampleRate)
+    const wavPcm = decodeWavPcm(await wav.arrayBuffer())
+    const decoder = createDataRxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, wavPcm.sampleRate, config)
+    const packetizer = new AcousticPacketizer()
+    const fountain = createDecoder()
+    let reconstructed: Uint8Array | null = null
+    for (const frame of decoder.pushSamples(wavPcm.pcm)) {
+      const parsed = packetizer.parseIncomingBuffer(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
+      if (parsed.fountainBlock && fountain.addBlock(parsed.fountainBlock)) { const [bytes] = readFileHeaderMetaFromBuffer(fountain.getDecoded()!); reconstructed = bytes; break }
+    }
+    expect(reconstructed).not.toBeNull()
+    expect(createHash('sha256').update(reconstructed!).digest('hex')).toBe(createHash('sha256').update(payload).digest('hex'))
   }, 120000)
 })
