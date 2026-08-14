@@ -987,7 +987,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         stopTransmission()
         receiveMode.value = ReceiveMode.IDLE
         transferPhase.value = TransferPhase.COMPLETE
-        sessionStep.value = SessionStep.COMPLETE
+        sessionStep.value = sendFilename.value === 'sonic-test-fixture.bin' && sendSha256.value === EXPECTED_TEST_SHA256
+          ? SessionStep.TEST_TRANSFER_VERIFIED
+          : SessionStep.COMPLETE
         activeTransferSessionId.value = null
         sessionLifecycle.activeTransferSessionId = null
       }
