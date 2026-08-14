@@ -152,6 +152,10 @@ export class AudioReceiver {
     return this.diagnostics
   }
 
+  public isActive(): boolean {
+    return this.isListening
+  }
+
   public getSampleRate(): number {
     return this.audioContext?.sampleRate || 48000
   }

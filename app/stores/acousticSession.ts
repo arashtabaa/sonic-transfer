@@ -260,6 +260,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   const gainCalibrationComplete = computed(() => isGainCalibrationComplete(adaptiveHandshakeState.value))
   const dataProfileReady = computed(() => profileVerificationStatus.value === 'READY' && verifiedProfile.value !== null && verifiedDataConfig.value !== null)
+  const receiverReadyForData = computed(() => isListening.value && receiveMode.value === ReceiveMode.NORMAL_RECEIVE && receiver?.isActive() === true && verifiedDataConfig.value !== null)
   const canSend = computed(() => isProductSendReady({ hasFile: storedData.value !== null, handshakeState: adaptiveHandshakeState.value, dataProfileReady: dataProfileReady.value }))
 
   function invalidateVerifiedProfile() {
@@ -732,6 +733,27 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     resolver?.(ready)
   }
 
+  async function rearmReceiverForData(): Promise<boolean> {
+    if (!isListening.value || profileVerificationStatus.value !== 'READY' || !verifiedDataConfig.value) return false
+    receiveMode.value = ReceiveMode.NORMAL_RECEIVE
+    ensureRxDecoders()
+    if (!receiver) receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
+    else receiver.setOnAudioDataCallback(processCentralAudioData)
+    await new Promise(resolve => setTimeout(resolve, HALF_DUPLEX_TIMING.TX_TO_RX_GUARD_MS))
+    if (!isListening.value) {
+      receiveMode.value = ReceiveMode.IDLE
+      return false
+    }
+    await receiver.start(selectedMicId.value || undefined)
+    if (!isListening.value) {
+      receiver.stop()
+      receiveMode.value = ReceiveMode.IDLE
+      return false
+    }
+    ensureRxDecoders()
+    return receiver.isActive()
+  }
+
   async function verifyAutoProfile(probeCount = 30): Promise<ModemProfileKey | null> {
     for (const candidate of [ModemProfileKey.TURBO, ModemProfileKey.BALANCED, ModemProfileKey.ROBUST]) {
       if (await verifyDataProfile(candidate, probeCount)) {
@@ -1019,7 +1041,12 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         profileVerificationStatus.value = report.classification
         profileVerificationResolver?.(report.classification === 'READY')
         profileVerificationResolver = null
-        receiveMode.value = ReceiveMode.IDLE
+        if (report.classification === 'READY') {
+          const rearmed = await rearmReceiverForData()
+          if (!rearmed) receiveMode.value = ReceiveMode.IDLE
+        } else {
+          receiveMode.value = ReceiveMode.IDLE
+        }
       }
       return
     }
@@ -1440,6 +1467,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     receivePerformance,
     gainCalibrationComplete,
     dataProfileReady,
+    receiverReadyForData,
     canSend,
     verifiedDataConfig,
     verifiedProfile,

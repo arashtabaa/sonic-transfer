@@ -34,7 +34,8 @@ const simpleStatus = computed(() => {
   if (store.receiveHeader) return { title: 'Receiving file…', detail: store.receiveHeader.filename, action: 'Stop' }
   if (store.profileVerificationStatus === 'UNVERIFIED' && store.gainCalibrationComplete) return { title: 'Verifying data link…', detail: 'Checking the production data profile', action: 'Stop' }
   if (['LOCAL_GAIN_SWEEP', 'REMOTE_GAIN_SWEEP'].includes(store.adaptiveHandshakeState)) return { title: 'Calibrating audio…', detail: 'Finding a reliable audio level', action: 'Stop' }
-  if (store.dataProfileReady && store.isListening) return { title: 'Link ready', detail: 'Waiting for a nearby sender…', action: 'Stop' }
+  if (store.dataProfileReady && store.isListening && store.receiverReadyForData) return { title: 'Link ready', detail: 'Waiting for a nearby sender…', action: 'Stop' }
+  if (store.dataProfileReady && store.isListening) return { title: 'Preparing receiver…', detail: 'Re-arming the microphone for the incoming file', action: 'Stop' }
   if (store.isListening) return { title: 'Listening for nearby sender…', detail: 'Keep this page open and place the other device nearby.', action: 'Stop' }
   return { title: 'Receive a file', detail: 'Keep this page open and place the other device nearby.', action: 'Start Receiving' }
 })
