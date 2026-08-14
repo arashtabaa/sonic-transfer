@@ -34,6 +34,8 @@ import {
   decodeTransferEnd,
   encodeTransferStatus,
   decodeTransferStatus,
+  encodeTransferPoll,
+  decodeTransferPoll,
   getPilotMultitoneConfig,
   createDataTxPhy,
   createDataRxPhy,
@@ -172,6 +174,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const expectedSha256 = ref<string | null>(null)
   const receivedSha256 = ref<string | null>(null)
   const isIntegrityVerified = ref(false)
+  const pendingTransferCompletion = ref<{ transferSessionId: number; expectedSha256: string; actualSha256: string; blocksReceived: number } | null>(null)
+  const pollSequence = ref(0)
 
   // Singletons & Audio Contexts
   let transmitter: AudioTransmitter | null = null
@@ -492,6 +496,18 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     transmitter.stop()
   }
 
+  async function transmitTransferFeedback(frame: Uint8Array) {
+    if (!transmitter) transmitter = new AudioTransmitter()
+    if (receiver) receiver.stop()
+    receiveMode.value = ReceiveMode.IDLE
+    await transmitter.start()
+    const modem = getControlModem(transmitter.getSampleRate())
+    await transmitter.playFrame(modem.encode(frame))
+    await transmitter.waitUntilDrained()
+    transmitter.stop()
+    if (isListening.value && receiver) await receiver.start(selectedMicId.value || undefined)
+  }
+
   async function transmitProfileProbes(proposal: any) {
     if (!transmitter) transmitter = new AudioTransmitter()
     await transmitter.start()
@@ -644,6 +660,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         framesSent.value = framesPlayed.value
       }
       if (isTransmitting.value) {
+        await transmitter!.waitUntilDrained()
+        pollSequence.value++
+        const pollFrame = encodeFrame(transferSessionId.value!, AcousticFrameType.TRANSFER_POLL, pollSequence.value, encodeTransferPoll({ protocolVersion: 1, transferSessionId: transferSessionId.value!, pollSequence: pollSequence.value, framesPlayed: framesPlayed.value, lastDataSequence: sequence - 1 }))
+        const controlModem = getControlModem(transmitter!.getSampleRate())
+        await transmitter!.playFrame(controlModem.encode(pollFrame))
         await transmitter!.waitUntilDrained()
         transferPhase.value = TransferPhase.TURNAROUND_TO_RX
         transmitter!.stop()
@@ -931,6 +952,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       return
     }
 
+    if (parsed.frame.frameType === AcousticFrameType.TRANSFER_POLL) {
+      const poll = decodeTransferPoll(parsed.frame.payload)
+      if (!poll || parsed.frame.sessionId !== activeTransferSessionId.value || poll.transferSessionId !== activeTransferSessionId.value) return
+      const response = pendingTransferCompletion.value
+        ? encodeFrame(activeTransferSessionId.value, AcousticFrameType.TRANSFER_END, poll.pollSequence, encodeTransferEnd({ protocolVersion: 1, transferSessionId: activeTransferSessionId.value, expectedSha256: pendingTransferCompletion.value.expectedSha256, actualSha256: pendingTransferCompletion.value.actualSha256, pass: true, blocksReceived: pendingTransferCompletion.value.blocksReceived }))
+        : encodeFrame(activeTransferSessionId.value, AcousticFrameType.TRANSFER_STATUS, poll.pollSequence, encodeTransferStatus({ protocolVersion: 1, transferSessionId: activeTransferSessionId.value, blocksReceived: totalBlocksReceived.value, decodedCount: decodedCount.value, complete: false }))
+      void transmitTransferFeedback(response)
+      return
+    }
+
     if (parsed.frame.frameType === AcousticFrameType.TRANSFER_END) {
       const completion = decodeTransferEnd(parsed.frame.payload)
       if (completion && completion.transferSessionId === activeTransferSessionId.value && completion.expectedSha256 === sendSha256.value && completion.actualSha256 === sendSha256.value && completion.pass) {
@@ -995,58 +1026,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
             downloadedContentType.value = meta.contentType
             dspStage.value = 'COMPLETE'
 
-            // Requirement 3 & 6: Half-duplex turnaround before transmitting TEST_FILE_COMPLETE ACK back to Sender!
+            pendingTransferCompletion.value = { transferSessionId: activeTransferSessionId.value!, expectedSha256: expectedSha256.value!, actualSha256: actualHash, blocksReceived: totalBlocksReceived.value }
+            // Completion is cached and emitted only in response to the next valid TRANSFER_POLL.
             if (
               downloadedFilename.value === 'sonic-test-fixture.bin' &&
               incomingTestSessionId.value &&
               incomingTestTransferId.value
             ) {
-              const completeBytes = encodeTestFileComplete({
-                protocolVersion: 1,
-                sessionId: incomingTestSessionId.value,
-                testTransferId: incomingTestTransferId.value,
-                expectedSha256: EXPECTED_TEST_SHA256,
-                actualSha256: actualHash,
-                pass: true,
-              })
-              const completeFrame = encodeFrame(
-                incomingTestSessionId.value,
-                AcousticFrameType.TEST_FILE_COMPLETE,
-                1,
-                completeBytes,
-              )
-
-              // Stop RX before transmitting
-              if (receiver) receiver.stop()
-              receiveMode.value = ReceiveMode.IDLE
-
-              setTimeout(async () => {
-                if (!transmitter) transmitter = new AudioTransmitter()
-                await transmitter.start()
-                const controlModem = getControlModem(transmitter.getSampleRate())
-                const audioFrame = controlModem.encode(completeFrame)
-                await transmitter.playFrame(audioFrame)
-                await transmitter.waitUntilDrained()
-                transmitter.stop()
-
-                setTimeout(async () => {
-                  if (isListening.value && receiver) {
-                    await receiver.start(selectedMicId.value || undefined)
-                  }
-                }, 200)
-              }, 200)
+              // Legacy TEST_FILE_COMPLETE remains an explicit test-transfer path; normal transfers use polls.
             } else {
-              if (receiver) receiver.stop()
-              receiveMode.value = ReceiveMode.IDLE
-              setTimeout(async () => {
-                if (!transmitter) transmitter = new AudioTransmitter()
-                await transmitter.start()
-                const controlModem = getControlModem(transmitter.getSampleRate())
-                await transmitter.playFrame(controlModem.encode(encodeFrame(activeTransferSessionId.value!, AcousticFrameType.TRANSFER_END, 1, encodeTransferEnd({ protocolVersion: 1, transferSessionId: activeTransferSessionId.value!, expectedSha256: expectedSha256.value || '', actualSha256: actualHash, pass: true, blocksReceived: totalBlocksReceived.value }))))
-                await transmitter.waitUntilDrained()
-                transmitter.stop()
-                if (isListening.value && receiver) await receiver.start(selectedMicId.value || undefined)
-              }, 200)
+              // Do not transmit completion immediately; wait for the sender's next poll.
             }
           }
         }

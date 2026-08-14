@@ -13,6 +13,7 @@ export enum AcousticFrameType {
   TRANSFER_START = 0x0A,
   TRANSFER_STATUS = 0x0B,
   TRANSFER_END = 0x0C,
+  TRANSFER_POLL = 0x0D,
   FREQUENCY_PROBE = 0x0E,
   FREQUENCY_REPORT = 0x0F,
   SESSION_HEADER = 0x10,
@@ -62,11 +63,14 @@ export interface TestFileCompletePayload {
 
 export interface TransferStatusPayload { protocolVersion: number; transferSessionId: number; blocksReceived: number; decodedCount: number; complete: boolean }
 export interface TransferEndPayload { protocolVersion: number; transferSessionId: number; expectedSha256: string; actualSha256: string; pass: boolean; blocksReceived: number }
+export interface TransferPollPayload { protocolVersion: number; transferSessionId: number; pollSequence: number; framesPlayed: number; lastDataSequence: number }
 
 export function encodeTransferStatus(payload: TransferStatusPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
-export function decodeTransferStatus(bytes: Uint8Array): TransferStatusPayload | null { try { const p = JSON.parse(new TextDecoder().decode(bytes)); return p.protocolVersion === 1 && Number.isInteger(p.transferSessionId) && Number.isInteger(p.blocksReceived) && Number.isInteger(p.decodedCount) && typeof p.complete === 'boolean' ? p : null } catch { return null } }
+export function decodeTransferStatus(bytes: Uint8Array): TransferStatusPayload | null { try { const p = parseObject(bytes) as TransferStatusPayload; return p.protocolVersion === 1 && isUint32(p.transferSessionId) && isSaneCount(p.blocksReceived) && isSaneCount(p.decodedCount) && typeof p.complete === 'boolean' ? p : null } catch { return null } }
 export function encodeTransferEnd(payload: TransferEndPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
-export function decodeTransferEnd(bytes: Uint8Array): TransferEndPayload | null { try { const p = JSON.parse(new TextDecoder().decode(bytes)); return p.protocolVersion === 1 && Number.isInteger(p.transferSessionId) && typeof p.expectedSha256 === 'string' && typeof p.actualSha256 === 'string' && typeof p.pass === 'boolean' && Number.isInteger(p.blocksReceived) ? p : null } catch { return null } }
+export function decodeTransferEnd(bytes: Uint8Array): TransferEndPayload | null { try { const p = parseObject(bytes) as TransferEndPayload; return p.protocolVersion === 1 && isUint32(p.transferSessionId) && isSha256(p.expectedSha256) && isSha256(p.actualSha256) && typeof p.pass === 'boolean' && isSaneCount(p.blocksReceived) ? p : null } catch { return null } }
+export function encodeTransferPoll(payload: TransferPollPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeTransferPoll(bytes: Uint8Array): TransferPollPayload | null { try { const p = parseObject(bytes) as TransferPollPayload; return p.protocolVersion === 1 && isUint32(p.transferSessionId) && isSaneCount(p.pollSequence) && isSaneCount(p.framesPlayed) && isSaneCount(p.lastDataSequence) ? p : null } catch { return null } }
 
 export interface ProfileProbePayload {
   protocolVersion: number
@@ -158,6 +162,8 @@ function parseObject(bytes: Uint8Array): Record<string, any> {
 }
 
 function isUint32(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 0xffffffff }
+function isSaneCount(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 1_000_000 }
+function isSha256(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-fA-F]{64}$/.test(value) }
 export const KNOWN_PROFILE_KEYS = ['auto', 'robust', 'balanced', 'turbo', 'near_ultrasonic', 'ultrasonic_experimental', 'fast_data_experimental', 'custom'] as const
 export function isKnownProfile(value: unknown): boolean { return KNOWN_PROFILE_KEYS.includes(String(value) as typeof KNOWN_PROFILE_KEYS[number]) }
 
