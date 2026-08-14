@@ -1,5 +1,5 @@
-import { AcousticFrameType, encodeFrame } from '../protocol/frame'
-import { ModemProfileKey } from '../modulation/modem'
+import { AcousticFrameType, encodeFrame, type ChannelReportPayload, type ProfileProbePayload, classifyProfileVerification, decodeChannelReport, decodeProfileProbe, encodeChannelReport, encodeProfileProbe } from '../protocol/frame'
+import { getProfileConfig, ModemProfileKey, validateConfig, type ModemConfig } from '../modulation/modem'
 
 export interface LinkTestOptions {
   profileKey: ModemProfileKey
@@ -38,6 +38,52 @@ export interface FrequencyReportPayload {
   snrDb: number | null
   clipped: boolean
   carrierDetected: boolean
+}
+
+export interface ProfileProposalPayload {
+  protocolVersion: number
+  sessionId: number
+  verificationNonce: number
+  profile: ModemProfileKey
+  sampleRate: number
+  config: ModemConfig
+  probeCount: number
+}
+
+export function encodeProfileProposal(payload: ProfileProposalPayload): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+export function decodeProfileProposal(bytes: Uint8Array): ProfileProposalPayload | null {
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as ProfileProposalPayload
+    if (payload.protocolVersion !== 1 || !payload.profile || payload.probeCount < 1 || !payload.config) return null
+    return payload
+  } catch { return null }
+}
+
+export function encodeProfileAccept(payload: ProfileProposalPayload): Uint8Array {
+  return encodeProfileProposal(payload)
+}
+
+export function decodeProfileAccept(bytes: Uint8Array): ProfileProposalPayload | null {
+  return decodeProfileProposal(bytes)
+}
+
+export function createProfileProbeFrame(payload: ProfileProbePayload, sessionId: number, sequence: number): Uint8Array {
+  return encodeFrame(sessionId, AcousticFrameType.LINK_PROBE, sequence, encodeProfileProbe(payload))
+}
+
+export function createChannelReportFrame(payload: ChannelReportPayload, sessionId: number, sequence = 1): Uint8Array {
+  return encodeFrame(sessionId, AcousticFrameType.CHANNEL_REPORT, sequence, encodeChannelReport(payload))
+}
+
+export function classifyProfileReport(crcValid: number, attemptedProbes: number): ChannelReportPayload['classification'] {
+  return classifyProfileVerification(crcValid, attemptedProbes)
+}
+
+export function validateProfileProposal(payload: ProfileProposalPayload, actualSampleRate: number): boolean {
+  return payload.sampleRate === actualSampleRate && payload.config.sampleRate === actualSampleRate && validateConfig(payload.config).valid
 }
 
 export function encodeFrequencyProbe(payload: FrequencyProbePayload): Uint8Array {

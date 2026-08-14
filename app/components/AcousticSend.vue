@@ -32,6 +32,13 @@ async function startRealFileTransfer() {
   await store.startTransmission()
 }
 
+async function verifySelectedDataProfile() {
+  if (store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK) return
+  store.linkCheckMessage = 'Verifying selected DATA profile with CRC-valid probe frames...'
+  if (store.selectedProfile === ModemProfileKey.AUTO) await store.verifyAutoProfile(30)
+  else await store.verifyDataProfile(store.selectedProfile, 30)
+}
+
 async function exportWavArtifact() {
   const payload = store.storedData || generateTestPayload()
   const renderResult = SonicWaveformRenderer.renderPayloadToPcm(
@@ -139,11 +146,24 @@ async function exportOggArtifact() {
         </button>
 
         <button
+          class="text-xs rounded-lg border border-purple-500/40 px-3 py-2 text-purple-300 hover:bg-purple-950/30 disabled:opacity-40"
+          :disabled="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK"
+          @click="verifySelectedDataProfile"
+        >
+          Verify DATA Profile (30 probes)
+        </button>
+
+        <button
           class="text-xs text-neutral-400 hover:text-neutral-200 underline"
           @click="store.skipVerification"
         >
           Skip Verification (Not recommended)
         </button>
+      </div>
+
+      <div v-if="store.profileVerificationStatus !== 'UNVERIFIED'" class="rounded-lg border border-purple-500/30 bg-purple-950/20 p-3 text-xs font-mono text-purple-200">
+        DATA {{ store.selectedProfile }}: {{ store.profileVerificationStatus }}
+        <span v-if="store.profileVerificationReport">— {{ store.profileVerificationReport.crcValid }}/{{ store.profileVerificationReport.attemptedProbes }} CRC-valid probes</span>
       </div>
 
       <div v-if="store.linkCheckMessage" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
@@ -229,7 +249,7 @@ async function exportOggArtifact() {
         <div v-if="throughputEstimate" class="rounded-lg border border-amber-500/30 bg-amber-950/20 p-3 text-xs font-mono text-amber-200">
           <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <span>Profile: {{ throughputEstimate.profile }}</span>
-            <span>Useful rate: {{ throughputEstimate.usefulBitrate.toFixed(0) }} bit/s</span>
+            <span>Useful rate: {{ throughputEstimate.sourceUsefulBitrate.toFixed(0) }} bit/s</span>
             <span>Audio duration: {{ formatDuration(throughputEstimate.durationSeconds) }}</span>
           </div>
           <p v-if="throughputEstimate.durationSeconds > 120" class="mt-2 text-amber-300">

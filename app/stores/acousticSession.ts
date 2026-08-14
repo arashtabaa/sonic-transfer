@@ -16,6 +16,16 @@ import {
   ModemProfileKey,
   BFSKStreamDecoder,
   validateTestFileCompleteFrame,
+  createProfileProbeFrame,
+  createChannelReportFrame,
+  decodeProfileProposal,
+  decodeProfileAccept,
+  decodeChannelReport,
+  encodeProfileProposal,
+  encodeProfileAccept,
+  validateProfileProposal,
+  classifyProfileReport,
+  decodeProfileProbe,
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
 } from '~/acoustic'
@@ -45,6 +55,8 @@ export enum ReceiveMode {
   TEST_DATA_RECEIVE = 'TEST_DATA_RECEIVE',
   FREQUENCY_PROBE_LISTEN = 'FREQUENCY_PROBE_LISTEN',
   FREQUENCY_REPORT_WAIT = 'FREQUENCY_REPORT_WAIT',
+  PROFILE_PROBE_LISTEN = 'PROFILE_PROBE_LISTEN',
+  PROFILE_REPORT_WAIT = 'PROFILE_REPORT_WAIT',
 }
 
 export enum TransferPhase {
@@ -94,6 +106,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const transferSessionId = ref<number | null>(null)
   const activeProbeNonce = ref<number | null>(null)
   const activeTestTransferId = ref<number | null>(null)
+  const profileVerificationStatus = ref<'UNVERIFIED' | 'READY' | 'MARGINAL' | 'FAILED'>('UNVERIFIED')
+  const profileVerificationReport = ref<any>(null)
+  const profileVerificationNonce = ref<number | null>(null)
+  const profileProbeValid = ref(0)
+  let profileVerificationResolver: ((ready: boolean) => void) | null = null
 
   // Receiver Learned Test State (Requirement 4 & 6 - NO 888/999 Fallbacks)
   const incomingTestSessionId = ref<number | null>(null)
@@ -214,7 +231,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     // 2. Data channel decode (negotiated dataModem)
-    if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE) {
+    if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN) {
       const dataFrames = dataRxDecoder!.pushSamples(samples)
       if (dataFrames.length > 0) {
         dspStage.value = 'CARRIER_LOCKED'
@@ -404,9 +421,62 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     runBurst()
   }
 
+  async function transmitControlVerificationFrame(frame: Uint8Array) {
+    if (!transmitter) transmitter = new AudioTransmitter()
+    await transmitter.start()
+    const modem = getControlModem(transmitter.getSampleRate())
+    await transmitter.playFrame(modem.encode(frame))
+    await transmitter.waitUntilDrained()
+    transmitter.stop()
+  }
+
+  async function transmitProfileProbes(proposal: any) {
+    if (!transmitter) transmitter = new AudioTransmitter()
+    await transmitter.start()
+    const modem = new BFSKAcousticModem(proposal.config)
+    for (let sequence = 1; sequence <= proposal.probeCount; sequence++) {
+      const probe = { protocolVersion: 1, sessionId: proposal.sessionId, verificationNonce: proposal.verificationNonce, profile: proposal.profile, probeSequence: sequence, totalProbes: proposal.probeCount }
+      await transmitter.playFrame(modem.encode(createProfileProbeFrame(probe, proposal.sessionId, sequence)))
+    }
+    await transmitter.waitUntilDrained()
+    transmitter.stop()
+  }
+
+  async function verifyDataProfile(profile = selectedProfile.value, probeCount = 30): Promise<boolean> {
+    if (profile === ModemProfileKey.AUTO || profile === ModemProfileKey.NEAR_ULTRASONIC || profile === ModemProfileKey.ULTRASONIC_EXPERIMENTAL || transferSessionId.value === null) {
+      profileVerificationStatus.value = 'FAILED'
+      return false
+    }
+    const sampleRate = transmitter?.getSampleRate() || receiver?.getSampleRate() || 48000
+    const verificationNonce = generateSecureRandomUint32()
+    profileVerificationNonce.value = verificationNonce
+    profileVerificationStatus.value = 'UNVERIFIED'
+    const proposal = { protocolVersion: 1, sessionId: transferSessionId.value, verificationNonce, profile, sampleRate, config: getProfileConfig(profile, sampleRate), probeCount }
+    await transmitControlVerificationFrame(encodeFrame(transferSessionId.value, AcousticFrameType.PROFILE_PROPOSE, 1, encodeProfileProposal(proposal)))
+    receiveMode.value = ReceiveMode.PROFILE_REPORT_WAIT
+    if (!receiver) receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
+    else receiver.setOnAudioDataCallback(processCentralAudioData)
+    await receiver.start(selectedMicId.value || undefined)
+    return new Promise<boolean>((resolve) => { profileVerificationResolver = resolve })
+  }
+
+  async function verifyAutoProfile(probeCount = 30): Promise<ModemProfileKey | null> {
+    for (const candidate of [ModemProfileKey.TURBO, ModemProfileKey.BALANCED, ModemProfileKey.ROBUST]) {
+      if (await verifyDataProfile(candidate, probeCount)) {
+        selectedProfile.value = candidate
+        return candidate
+      }
+    }
+    return null
+  }
+
   // --- Sender Transmission ---
   async function startTransmission(data?: Uint8Array, filename?: string, contentType?: string) {
     if (isTransmitting.value) return
+    if (selectedProfile.value !== ModemProfileKey.ROBUST && profileVerificationStatus.value !== 'READY') {
+      linkCheckMessage.value = `${selectedProfile.value} DATA profile is not READY; run production profile verification first.`
+      return
+    }
 
     const rawData = data || storedData.value
     if (!rawData) return
@@ -546,6 +616,74 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     dspStage.value = 'CRC_VALID'
     metricsCollector.recordPacket(parsed.frame.payload.length, true)
+
+    const profileProbe = parsed.frame.frameType === AcousticFrameType.LINK_PROBE ? decodeProfileProbe(parsed.frame.payload) : null
+    if (profileProbe && receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && profileVerificationNonce.value === profileProbe.verificationNonce) {
+      profileProbeValid.value = Math.max(profileProbeValid.value, profileProbe.probeSequence)
+      if (profileProbe.probeSequence === profileProbe.totalProbes) {
+        const stats = dataRxDecoder?.getStats()
+        const valid = Math.min(profileProbe.totalProbes, stats?.crcValid || profileProbeValid.value)
+        const report = {
+          protocolVersion: 1,
+          sessionId: profileProbe.sessionId,
+          verificationNonce: profileProbe.verificationNonce,
+          profile: profileProbe.profile,
+          attemptedProbes: profileProbe.totalProbes,
+          framesDetected: stats?.framesDetected || valid,
+          crcValid: valid,
+          crcInvalid: Math.max(0, profileProbe.totalProbes - valid),
+          per: 1 - valid / profileProbe.totalProbes,
+          classification: classifyProfileReport(valid, profileProbe.totalProbes),
+          sampleRate: dataRxDecoder?.getSampleRate() || 48000,
+        }
+        if (receiver) receiver.stop()
+        await transmitControlVerificationFrame(createChannelReportFrame(report, profileProbe.sessionId))
+        profileVerificationReport.value = report
+        profileVerificationStatus.value = report.classification
+        profileVerificationResolver?.(report.classification === 'READY')
+        profileVerificationResolver = null
+        receiveMode.value = ReceiveMode.IDLE
+      }
+      return
+    }
+
+    if (parsed.frame.frameType === AcousticFrameType.PROFILE_PROPOSE) {
+      const proposal = decodeProfileProposal(parsed.frame.payload)
+      const actualRate = receiver?.getSampleRate() || rxSampleRateOverride || 48000
+      if (proposal && validateProfileProposal(proposal, actualRate)) {
+        profileVerificationNonce.value = proposal.verificationNonce
+        profileProbeValid.value = 0
+        if (receiver) receiver.stop()
+        await transmitControlVerificationFrame(encodeFrame(proposal.sessionId, AcousticFrameType.PROFILE_ACCEPT, 1, encodeProfileAccept(proposal)))
+        dataRxDecoder = new BFSKStreamDecoder(new BFSKAcousticModem(proposal.config))
+        receiveMode.value = ReceiveMode.PROFILE_PROBE_LISTEN
+        if (isListening.value && receiver) await receiver.start(selectedMicId.value || undefined)
+      }
+      return
+    }
+
+    if (parsed.frame.frameType === AcousticFrameType.PROFILE_ACCEPT) {
+      const proposal = decodeProfileAccept(parsed.frame.payload)
+      if (proposal && proposal.verificationNonce === profileVerificationNonce.value && proposal.sessionId === transferSessionId.value) {
+        if (receiver) receiver.stop()
+        await transmitProfileProbes(proposal)
+        receiveMode.value = ReceiveMode.PROFILE_REPORT_WAIT
+        if (receiver) await receiver.start(selectedMicId.value || undefined)
+      }
+      return
+    }
+
+    if (parsed.frame.frameType === AcousticFrameType.CHANNEL_REPORT) {
+      const report = decodeChannelReport(parsed.frame.payload)
+      if (report && report.verificationNonce === profileVerificationNonce.value && report.sessionId === transferSessionId.value) {
+        profileVerificationReport.value = report
+        profileVerificationStatus.value = report.classification
+        linkCheckMessage.value = `${report.profile} DATA verification: ${report.classification} (${report.crcValid}/${report.attemptedProbes} CRC-valid probes)`
+        if (receiver) receiver.stop()
+        receiveMode.value = ReceiveMode.IDLE
+      }
+      return
+    }
 
     // Handle TEST_FILE_START: Device B learns incoming test session details! (Requirement 1 & 4)
     if (parsed.frame.frameType === AcousticFrameType.TEST_FILE_START) {
@@ -774,6 +912,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     expectedSha256,
     receivedSha256,
     isIntegrityVerified,
+    profileVerificationStatus,
+    profileVerificationReport,
     liveStats,
     processCentralAudioData,
     prepareArtifactDecoding,
@@ -781,6 +921,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     skipVerification,
     runAcousticLinkCheck,
     runTestFileTransfer,
+    verifyDataProfile,
+    verifyAutoProfile,
     startTransmission,
     stopTransmission,
     startListening,

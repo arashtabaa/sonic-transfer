@@ -59,6 +59,59 @@ export interface TestFileCompletePayload {
   pass: boolean
 }
 
+export interface ProfileProbePayload {
+  protocolVersion: number
+  sessionId: number
+  verificationNonce: number
+  profile: string
+  probeSequence: number
+  totalProbes: number
+}
+
+export type ProfileVerificationClass = 'READY' | 'MARGINAL' | 'FAILED'
+
+export interface ChannelReportPayload {
+  protocolVersion: number
+  sessionId: number
+  verificationNonce: number
+  profile: string
+  attemptedProbes: number
+  framesDetected: number
+  crcValid: number
+  crcInvalid: number
+  per: number
+  classification: ProfileVerificationClass
+  sampleRate: number
+}
+
+export function encodeProfileProbe(payload: ProfileProbePayload): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+export function decodeProfileProbe(bytes: Uint8Array): ProfileProbePayload | null {
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as ProfileProbePayload
+    if (payload.protocolVersion !== PROTOCOL_VERSION || !payload.profile || payload.totalProbes < 1 || payload.probeSequence < 1 || payload.probeSequence > payload.totalProbes) return null
+    return payload
+  } catch { return null }
+}
+
+export function encodeChannelReport(payload: ChannelReportPayload): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(payload))
+}
+
+export function decodeChannelReport(bytes: Uint8Array): ChannelReportPayload | null {
+  try { return JSON.parse(new TextDecoder().decode(bytes)) as ChannelReportPayload } catch { return null }
+}
+
+export function classifyProfileVerification(crcValid: number, attemptedProbes: number): ProfileVerificationClass {
+  if (attemptedProbes <= 0) return 'FAILED'
+  const ratio = crcValid / attemptedProbes
+  if (ratio >= 0.9) return 'READY'
+  if (ratio >= 0.6) return 'MARGINAL'
+  return 'FAILED'
+}
+
 export function encodeTestFileStart(payload: TestFileStartPayload): Uint8Array {
   const jsonStr = JSON.stringify(payload)
   return new TextEncoder().encode(jsonStr)
