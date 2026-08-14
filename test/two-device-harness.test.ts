@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { AcousticFrameType, AcousticLinkTester, AcousticPacketizer, SessionLifecycleRuntime, createDataRxPhy, createDataTxPhy, decodeTransferEnd, decodeTransferPoll, encodeFrame, encodeTransferEnd, encodeTransferPoll, encodeTransferStatus, getFastDataConfig, getPilotMultitoneConfig, getProfileConfig, ModemProfileKey, renderFastPayloadToPcm } from '../app/acoustic'
+import { AcousticFrameType, AcousticLinkTester, AcousticPacketizer, SessionLifecycleRuntime, createDataRxPhy, createDataTxPhy, decodeTransferEnd, decodeTransferPoll, encodeFrame, encodeTransferEnd, encodeTransferPoll, encodeTransferStatus, getPilotMultitoneConfig, getProfileConfig, ModemProfileKey, renderFastPayloadToPcm } from '../app/acoustic'
 import { createDecoder, readFileHeaderMetaFromBuffer } from '../packages/luby-transform/src'
 import { generateTestPayload } from '../app/constants/testPayload'
 
@@ -8,6 +8,12 @@ function resample(pcm: Float32Array, sourceRate: number, destinationRate: number
   const output = new Float32Array(Math.round(pcm.length * destinationRate / sourceRate))
   for (let i = 0; i < output.length; i++) { const source = i * sourceRate / destinationRate; const left = Math.floor(source); const fraction = source - left; output[i] = (pcm[left] || 0) * (1 - fraction) + (pcm[Math.min(left + 1, pcm.length - 1)] || 0) * fraction }
   return output
+}
+
+function robustRoundTrip(frame: Uint8Array, sourceRate: number, destinationRate: number) {
+  const tx = createDataTxPhy(ModemProfileKey.ROBUST, sourceRate, getProfileConfig(ModemProfileKey.ROBUST, sourceRate))
+  const rx = createDataRxPhy(ModemProfileKey.ROBUST, destinationRate, getProfileConfig(ModemProfileKey.ROBUST, destinationRate))
+  return rx.pushSamples(resample(tx.encode(frame).samples, sourceRate, destinationRate))[0] || null
 }
 
 describe('deterministic two-device synthetic acoustic harness', () => {
@@ -56,18 +62,19 @@ describe('deterministic two-device synthetic acoustic harness', () => {
 
     const pollPayload = encodeTransferPoll({ protocolVersion: 1, transferSessionId: transferSession, pollSequence: 1, framesPlayed: rendered.totalFrames, lastDataSequence: rendered.transmittedBlocks })
     const poll = encodeFrame(transferSession, AcousticFrameType.TRANSFER_POLL, 1, pollPayload)
-    const pollDecoded = decodeTransferPoll(pollPayload)
-    expect(pollDecoded && receiverRuntime.acceptFeedbackFrame({ version: 1, sessionId: transferSession, frameType: AcousticFrameType.TRANSFER_POLL, sequence: 1, payload: pollPayload, checksum: 0 })).toBe(true)
+    const pollFrame = robustRoundTrip(poll, senderRate, receiverRate)
+    const pollDecoded = decodeTransferPoll(pollFrame?.payload || new Uint8Array())
+    expect(pollFrame && receiverRuntime.acceptFeedbackFrame(pollFrame)).toBe(true)
     expect(pollDecoded?.framesPlayed).toBe(rendered.totalFrames)
 
     const statusPayload = encodeTransferStatus({ protocolVersion: 1, transferSessionId: transferSession, blocksReceived: rendered.transmittedBlocks, decodedCount: rendered.sourceBlocks, complete: false })
-    const statusFrame = { version: 1, sessionId: transferSession, frameType: AcousticFrameType.TRANSFER_STATUS, sequence: 1, payload: statusPayload, checksum: 0 }
-    expect(senderRuntime.acceptFeedbackFrame(statusFrame)).toBe(true)
+    const statusFrame = robustRoundTrip(encodeFrame(transferSession, AcousticFrameType.TRANSFER_STATUS, 1, statusPayload), receiverRate, senderRate)
+    expect(statusFrame && senderRuntime.acceptFeedbackFrame(statusFrame)).toBe(true)
     const endPayload = encodeTransferEnd({ protocolVersion: 1, transferSessionId: transferSession, expectedSha256: sha, actualSha256: sha, pass: true, blocksReceived: rendered.transmittedBlocks })
     expect(decodeTransferEnd(endPayload)).not.toBeNull()
-    expect(senderRuntime.acceptFeedbackFrame({ version: 1, sessionId: transferSession, frameType: AcousticFrameType.TRANSFER_END, sequence: 2, payload: endPayload, checksum: 0 })).toBe(true)
+    const endFrame = robustRoundTrip(encodeFrame(transferSession, AcousticFrameType.TRANSFER_END, 2, endPayload), receiverRate, senderRate)
+    expect(endFrame && senderRuntime.acceptFeedbackFrame(endFrame)).toBe(true)
     expect(decodeTransferEnd(encodeTransferEnd({ ...decodeTransferEnd(endPayload)!, expectedSha256: 'bad' }))).toBeNull()
     expect(senderRuntime.acceptFeedbackFrame({ version: 1, sessionId: transferSession + 1, frameType: AcousticFrameType.TRANSFER_END, sequence: 2, payload: endPayload, checksum: 0 })).toBe(false)
-    void poll
   }, 180000)
 })
