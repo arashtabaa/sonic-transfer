@@ -59,4 +59,17 @@ describe('pilot-assisted constant-power multitone V2', () => {
     expect(rx.pushSamples(resampled).map(frame => frame.sequence)).toEqual([10])
   })
 
+  it('decodes a continuous varied multi-frame 48 kHz to 44.1 kHz stream', () => {
+    const txConfig = getPilotMultitoneConfig(48000)
+    const txModem = new PilotMultitoneModem(txConfig)
+    const parts = Array.from({ length: 20 }, (_, i) => txModem.encode(encodeFrame(0x534f4e49, AcousticFrameType.DATA, i + 1, new Uint8Array((i % 5 + 1) * 7).fill(i))).samples)
+    const joined = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0)); let write = 0
+    for (const part of parts) { joined.set(part, write); write += part.length }
+    const resampled = new Float32Array(Math.round(joined.length * 44100 / 48000))
+    for (let i = 0; i < resampled.length; i++) { const source = i * 48000 / 44100; const left = Math.floor(source); const fraction = source - left; resampled[i] = (joined[left] || 0) * (1 - fraction) + (joined[Math.min(left + 1, joined.length - 1)] || 0) * fraction }
+    const decoder = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(44100)))
+    const frames = decoder.pushSamples(resampled)
+    expect(frames.map(frame => frame.sequence)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
+  })
+
 })

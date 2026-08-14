@@ -122,53 +122,82 @@ export class PilotMultitoneModem {
 
 export class PilotMultitoneStreamDecoder {
   private buffer = new Float32Array(0)
+  private bufferOriginExact = 0
+  private nextFrameOriginExact: number | null = null
   private channel: CarrierDiagnostic[] | null = null
   private readonly pilotDiagnostics: Array<{ oldMagnitude: number; newMagnitude: number; oldPhase: number; newPhase: number; confidence: number; usable: boolean }> = []
+  private readonly timingDiagnostics: Array<{ origin: number; frameSymbols: number; consumed: number; nextOrigin: number; bufferOrigin: number }> = []
   constructor(private readonly modem: PilotMultitoneModem) {}
 
   pushSamples(samples: Float32Array): AcousticFrame[] {
     const merged = new Float32Array(this.buffer.length + samples.length); merged.set(this.buffer); merged.set(samples, this.buffer.length); this.buffer = merged
     const frames: AcousticFrame[] = []
     while (true) {
-      const start = this.findPreamble()
-      if (start < 0) { this.buffer = this.buffer.slice(Math.max(0, this.buffer.length - this.modem.stride * 6)); break }
-      const parsed = this.tryDecode(start)
+      const candidate = this.findPreamble()
+      if (!candidate) { const keep = Math.min(this.buffer.length, this.modem.stride * 6); const discarded = this.buffer.length - keep; this.buffer = this.buffer.slice(discarded); this.bufferOriginExact += discarded; break }
+      const parsed = this.tryDecode(candidate.origin)
       if (!parsed) {
         const minimumCandidateSamples = this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 16)
-        if (this.buffer.length > start + minimumCandidateSamples) { this.buffer = this.buffer.slice(start + 1); continue }
+        if (this.buffer.length > candidate.index + minimumCandidateSamples) { this.buffer = this.buffer.slice(candidate.index + 1); this.bufferOriginExact += candidate.index + 1; continue }
         break
       }
       if (parsed.frame) {
         frames.push(parsed.frame)
-        this.buffer = this.buffer.slice(start + parsed.consumed)
+        const frameOriginExact = this.bufferOriginExact + candidate.exactOrigin
+        const consumed = candidate.index + parsed.consumed
+        this.buffer = this.buffer.slice(consumed)
+        this.bufferOriginExact += consumed
+        this.nextFrameOriginExact = frameOriginExact + (parsed.frameSymbols + FRAME_GAP_SYMBOLS) * this.modem.timingStride
+        this.timingDiagnostics.push({ origin: frameOriginExact, frameSymbols: parsed.frameSymbols, consumed, nextOrigin: this.nextFrameOriginExact, bufferOrigin: this.bufferOriginExact })
       } else {
-        this.buffer = this.buffer.slice(start + 1)
+        this.buffer = this.buffer.slice(candidate.index + 1)
+        this.bufferOriginExact += candidate.index + 1
       }
     }
     return frames
   }
 
-  reset(): void { this.buffer = new Float32Array(0); this.channel = null; this.pilotDiagnostics.length = 0 }
+  reset(): void { this.buffer = new Float32Array(0); this.bufferOriginExact = 0; this.nextFrameOriginExact = null; this.channel = null; this.pilotDiagnostics.length = 0; this.timingDiagnostics.length = 0 }
 
   getPilotDiagnostics() { return this.pilotDiagnostics.map(item => ({ ...item })) }
+  getTimingDiagnostics() { return this.timingDiagnostics.map(item => ({ ...item })) }
 
-  private findPreamble(): number {
-    const need = this.modem.stride * (PREAMBLE_SIGNS.length + 2)
-    for (let offset = 0; offset <= this.buffer.length - need; offset += 4) {
-      const channel = this.modem.estimateChannel(this.buffer, offset, this.symbolOffset(offset, 1) - offset, this.activeLength(offset, 0))
+  private findPreamble(): { index: number; origin: number; exactOrigin: number } | null {
+    const need = this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 2)
+    const predicted = this.nextFrameOriginExact === null ? null : this.nextFrameOriginExact - this.bufferOriginExact
+    const timingSearchRadius = Math.ceil(this.modem.timingStride * 4)
+    const first = predicted === null ? 0 : Math.max(0, Math.floor(predicted) - timingSearchRadius)
+    const last = predicted === null ? this.buffer.length - need : Math.min(this.buffer.length - need, Math.ceil(predicted) + timingSearchRadius)
+    const offsets = predicted === null
+      ? Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index)
+      : []
+    if (predicted !== null) {
+      const center = Math.round(predicted)
+      for (let delta = 0; delta <= timingSearchRadius; delta++) {
+        if (delta === 0) offsets.push(center)
+        else { offsets.push(center - delta); offsets.push(center + delta) }
+      }
+    }
+    for (const offset of offsets) {
+      if (offset < first || offset > last) continue
+      const origin = offset
+      const exactOrigin = predicted === null ? offset : predicted + (offset - Math.round(predicted))
+      const firstSymbol = this.symbolOffset(origin, 0)
+      const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0))
       if (channel.some(c => !c.usable)) continue
       let valid = true
       for (let i = 0; i < PREAMBLE_SIGNS.length; i++) {
-        const d = this.analyzeAt(this.buffer, offset, i, channel)
+        const d = this.analyzeAt(this.buffer, origin, i, channel)
         if (!d || d.confidence < 1.5 || d.decisions.some(bit => (bit === 1 ? -1 : 1) !== PREAMBLE_SIGNS[i])) { valid = false; break }
       }
-      if (valid) return offset
+      if (valid) return { index: offset, origin, exactOrigin }
     }
-    return -1
+    return null
   }
 
-  private tryDecode(start: number): { frame: AcousticFrame | null; consumed: number } | null {
-    const channel = this.modem.estimateChannel(this.buffer, start, this.symbolOffset(start, 1) - start, this.activeLength(start, 0))
+  private tryDecode(origin: number): { frame: AcousticFrame | null; consumed: number; frameSymbols: number } | null {
+    const firstSymbol = this.symbolOffset(origin, 0)
+    const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0))
     this.channel = channel
     const bits: number[] = []
     let symbol = PREAMBLE_SIGNS.length
@@ -176,10 +205,10 @@ export class PilotMultitoneStreamDecoder {
     let nextPilotAt = this.modem.config.pilotInterval
     while (true) {
       if (dataSymbols === nextPilotAt) {
-        const pilotOffset = this.symbolOffset(start, symbol++)
-        const pilot = this.analyzeAt(this.buffer, start, symbol - 1, channel)
+        const pilotOffset = this.symbolOffset(origin, symbol++)
+        const pilot = this.analyzeAt(this.buffer, origin, symbol - 1, channel)
         if (!pilot) return null
-        const fresh = this.modem.estimatePilotChannel(this.buffer, pilotOffset, this.activeLength(start, symbol - 1))
+        const fresh = this.modem.estimatePilotChannel(this.buffer, pilotOffset, this.activeLength(origin, symbol - 1))
         for (let i = 0; i < channel.length; i++) {
           const old = channel[i]!
           const next = fresh[i]!
@@ -190,7 +219,7 @@ export class PilotMultitoneStreamDecoder {
         continue
       }
       const currentSymbol = symbol++
-      const decision = this.analyzeAt(this.buffer, start, currentSymbol, channel)
+      const decision = this.analyzeAt(this.buffer, origin, currentSymbol, channel)
       if (!decision) return null
       bits.push(...decision.decisions); dataSymbols++
       const bytes = bitsToBytes(bits)
@@ -199,15 +228,15 @@ export class PilotMultitoneStreamDecoder {
       if (bytes.length * 8 < total * 8) continue
       const nativeTiming = Math.abs(this.modem.timingStride - this.modem.stride) < 1e-9
       const consumed = nativeTiming
-        ? this.symbolOffset(start, symbol + FRAME_GAP_SYMBOLS) - start
-        : this.symbolOffset(start, symbol - 1) + this.activeLength(start, symbol - 1) - start
-      return { frame: decodeFrame(bytes.subarray(0, total)), consumed }
+        ? this.symbolOffset(origin, symbol + FRAME_GAP_SYMBOLS) - Math.round(origin)
+        : this.symbolOffset(origin, symbol - 1) + this.activeLength(origin, symbol - 1) - Math.round(origin)
+      return { frame: decodeFrame(bytes.subarray(0, total)), consumed, frameSymbols: symbol }
     }
   }
 
-  private symbolOffset(start: number, symbol: number): number { return start + Math.round(symbol * this.modem.timingStride) }
-  private activeLength(start: number, symbol: number): number { return this.modem.timing.activeLength(start, symbol) }
-  private analyzeAt(samples: Float32Array, start: number, symbol: number, channel: CarrierDiagnostic[]) { return this.modem.analyzeSymbol(samples, this.symbolOffset(start, symbol), channel, this.activeLength(start, symbol)) }
+  private symbolOffset(origin: number, symbol: number): number { return Math.round(origin + symbol * this.modem.timingStride) }
+  private activeLength(origin: number, symbol: number): number { return this.modem.timing.activeEnd(origin, symbol) - this.symbolOffset(origin, symbol) }
+  private analyzeAt(samples: Float32Array, origin: number, symbol: number, channel: CarrierDiagnostic[]) { return this.modem.analyzeSymbol(samples, this.symbolOffset(origin, symbol), channel, this.activeLength(origin, symbol)) }
 }
 
 function correlate(samples: Float32Array, offset: number, count: number, frequency: number, sampleRate: number) {
