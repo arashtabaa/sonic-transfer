@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ModemProfileKey, SonicWaveformRenderer, detectOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
+  import { ModemProfileKey, SonicWaveformRenderer, probeOggOpusSupport, encodeWavBlob, encodeOggOpusBlob } from '~/acoustic'
 import { generateTestPayload } from '~/constants/testPayload'
 import { SessionStep, useAcousticSessionStore } from '~/stores/acousticSession'
 
@@ -47,7 +47,9 @@ async function exportWavArtifact() {
 }
 
 async function exportOggArtifact() {
-  const capability = detectOggOpusSupport()
+    oggStatus.value = 'IDLE'
+    oggStatusMessage.value = 'Checking browser Opus capabilities...'
+    const capability = await probeOggOpusSupport()
   if (!capability.supported) {
     oggStatus.value = 'UNSUPPORTED'
     oggStatusMessage.value = capability.reason || 'WebCodecs Opus is unavailable in this browser.'

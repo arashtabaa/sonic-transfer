@@ -3,6 +3,7 @@
 export interface OggExportCapability {
   supported: boolean
   mimeType: 'audio/ogg; codecs=opus' | ''
+  status: 'SUPPORTED' | 'NO_WEBCODECS' | 'PROBE_REQUIRED' | 'UNSUPPORTED'
   reason?: string
 }
 
@@ -18,6 +19,8 @@ export interface OggCodecMetrics {
   referenceRms: number
   decodedRms: number
   rmsError: number
+  estimatedDelayMs: number
+  alignedRmsError: number
 }
 
 interface EncodedOpusPacket {
@@ -28,9 +31,24 @@ interface EncodedOpusPacket {
 export function detectOggOpusSupport(): OggExportCapability {
   const scope = typeof window !== 'undefined' ? window as any : globalThis as any
   if (!scope.AudioEncoder || !scope.AudioDecoder || !scope.AudioData || !scope.EncodedAudioChunk) {
-    return { supported: false, mimeType: '', reason: 'WebCodecs Opus encoder/decoder unavailable in this browser' }
+    return { supported: false, mimeType: '', status: 'NO_WEBCODECS', reason: 'WebCodecs Opus encoder/decoder unavailable in this browser' }
   }
-  return { supported: true, mimeType: 'audio/ogg; codecs=opus' }
+  return { supported: false, mimeType: 'audio/ogg; codecs=opus', status: 'PROBE_REQUIRED', reason: 'WebCodecs capability probe required' }
+}
+
+export async function probeOggOpusSupport(sampleRate = 48000): Promise<OggExportCapability> {
+  const detected = detectOggOpusSupport()
+  if (detected.status === 'NO_WEBCODECS') return detected
+  const scope = typeof window !== 'undefined' ? window as any : globalThis as any
+  try {
+    const encoder = await scope.AudioEncoder.isConfigSupported({ codec: 'opus', sampleRate, numberOfChannels: 1, bitrate: 64000 })
+    if (!encoder.supported) return { supported: false, mimeType: '', status: 'UNSUPPORTED', reason: 'Opus encode config is unsupported' }
+    const decoder = await scope.AudioDecoder.isConfigSupported({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 })
+    if (!decoder.supported) return { supported: false, mimeType: '', status: 'UNSUPPORTED', reason: 'Opus decode config is unsupported' }
+    return { supported: true, mimeType: 'audio/ogg; codecs=opus', status: 'SUPPORTED' }
+  } catch (error: any) {
+    return { supported: false, mimeType: '', status: 'UNSUPPORTED', reason: error?.message || 'Opus capability probe failed' }
+  }
 }
 
 /** Encode PCM with WebCodecs Opus and mux the packets into a genuine Ogg stream. */
@@ -40,16 +58,22 @@ export async function encodeOggOpusBlob(pcm: Float32Array, sampleRate: number): 
 }
 
 export async function encodeOggOpus(pcm: Float32Array, sampleRate: number): Promise<Uint8Array> {
-  const capability = detectOggOpusSupport()
+  const capability = await probeOggOpusSupport(sampleRate)
   if (!capability.supported) throw new Error(capability.reason || 'OGG/Opus unsupported')
 
   const scope = typeof window !== 'undefined' ? window as any : globalThis as any
   const packets: EncodedOpusPacket[] = []
+  let opusHeadDescription: Uint8Array | undefined
   const encoder = new scope.AudioEncoder({
-    output: (chunk: any) => {
+    output: (chunk: any, metadata: any) => {
       const data = new Uint8Array(chunk.byteLength)
       chunk.copyTo(data)
-      packets.push({ data, sampleCount: Math.round(sampleRate * 0.02) })
+      const description = metadata?.decoderConfig?.description
+      if (description && !opusHeadDescription) {
+        const candidate = description instanceof Uint8Array ? description : new Uint8Array(description)
+        if (readAscii(candidate, 0, 8) === 'OpusHead') opusHeadDescription = candidate.slice()
+      }
+      packets.push({ data, sampleCount: OPUS_FRAME_SAMPLES })
     },
     error: (error: unknown) => { throw error },
   })
@@ -80,22 +104,26 @@ export async function encodeOggOpus(pcm: Float32Array, sampleRate: number): Prom
     encoder.close()
   }
 
-  return muxOggOpus(packets, sampleRate)
+  if (!opusHeadDescription) throw new Error('WebCodecs did not provide OpusHead metadata; standards-compliant Ogg muxing is unsupported')
+  return muxOggOpus(packets, opusHeadDescription)
 }
 
 /** Decode Ogg pages and Opus packets with the browser's client-side decoder. */
 export async function decodeOggOpusPcm(bytes: Uint8Array): Promise<DecodedOggOpusPcm> {
-  const capability = detectOggOpusSupport()
+  const capability = await probeOggOpusSupport()
   if (!capability.supported) throw new Error(capability.reason || 'OGG/Opus unsupported')
 
   const parsed = parseOggOpus(bytes)
   const head = parsed.packets[0]!
-  const sampleRate = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(12, true)
+  const headView = new DataView(head.buffer, head.byteOffset, head.byteLength)
+  const preSkip = headView.getUint16(10, true)
   const scope = typeof window !== 'undefined' ? window as any : globalThis as any
   const chunks: Float32Array[] = []
   let totalFrames = 0
+  let decodedSampleRate = 0
   const decoder = new scope.AudioDecoder({
     output: (audioData: any) => {
+      decodedSampleRate = audioData.sampleRate
       const frames = audioData.numberOfFrames
       const values = new Float32Array(frames)
       if (audioData.format === 'f32' || audioData.format === 'f32-planar') {
@@ -113,7 +141,7 @@ export async function decodeOggOpusPcm(bytes: Uint8Array): Promise<DecodedOggOpu
   })
 
   try {
-    decoder.configure({ codec: 'opus', sampleRate, numberOfChannels: 1 })
+    decoder.configure({ codec: 'opus', sampleRate: OPUS_CLOCK_RATE, numberOfChannels: 1 })
     let timestamp = 0
     for (const packet of parsed.packets.slice(2)) {
       decoder.decode(new scope.EncodedAudioChunk({ type: 'key', timestamp, data: packet }))
@@ -130,16 +158,22 @@ export async function decodeOggOpusPcm(bytes: Uint8Array): Promise<DecodedOggOpu
     pcm.set(chunk, offset)
     offset += chunk.length
   }
-  return { pcm, sampleRate }
+  const actualSampleRate = decodedSampleRate
+  if (!actualSampleRate) throw new Error('Opus decoder produced no audio')
+  const start = Math.min(preSkip, pcm.length)
+  const end = Math.min(pcm.length, Math.max(start, Math.round((parsed.lastGranulePosition - preSkip) * actualSampleRate / OPUS_CLOCK_RATE)))
+  return { pcm: pcm.slice(start, end), sampleRate: actualSampleRate }
 }
 
 export function measureOggCodecMetrics(reference: Float32Array, decoded: Float32Array, referenceRate: number, decodedRate: number): OggCodecMetrics {
   const referenceRms = rms(reference)
   const decodedRms = rms(decoded)
-  const compareLength = Math.min(reference.length, decoded.length)
+  const lag = estimateLag(reference, decoded, referenceRate, decodedRate)
+  const compareLength = Math.min(reference.length, decoded.length - Math.max(0, lag))
   let error = 0
   for (let i = 0; i < compareLength; i++) {
-    const difference = reference[i]! - decoded[i]!
+    const decodedIndex = Math.max(0, lag) + Math.round(i * decodedRate / referenceRate)
+    const difference = reference[i]! - (decoded[decodedIndex] || 0)
     error += difference * difference
   }
   return {
@@ -149,11 +183,32 @@ export function measureOggCodecMetrics(reference: Float32Array, decoded: Float32
     referenceRms,
     decodedRms,
     rmsError: Math.sqrt(error / (compareLength || 1)),
+    estimatedDelayMs: lag / referenceRate * 1000,
+    alignedRmsError: Math.sqrt(error / (compareLength || 1)),
   }
+}
+
+function estimateLag(reference: Float32Array, decoded: Float32Array, referenceRate: number, decodedRate: number): number {
+  const maxLag = Math.min(Math.round(referenceRate * 0.2), 9600)
+  const step = 16
+  let bestLag = 0
+  let bestScore = -Infinity
+  for (let lag = -maxLag; lag <= maxLag; lag += step) {
+    let score = 0
+    const count = Math.min(reference.length, Math.max(0, decoded.length - lag))
+    for (let i = 0; i < count; i += step) {
+      const decodedIndex = Math.max(0, lag) + Math.round(i * decodedRate / referenceRate)
+      score += reference[i]! * (decoded[decodedIndex] || 0)
+    }
+    if (score > bestScore) { bestScore = score; bestLag = lag }
+  }
+  return bestLag
 }
 
 export interface ParsedOggOpus {
   sampleRate: number
+  preSkip: number
+  lastGranulePosition: number
   packets: Uint8Array[]
 }
 
@@ -162,6 +217,11 @@ export function parseOggOpus(bytes: Uint8Array): ParsedOggOpus {
   const packets: Uint8Array[] = []
   let offset = 0
   let current: number[] = []
+  let serial: number | undefined
+  let expectedSequence = 0
+  let firstHeaderType = 0
+  let lastHeaderType = 0
+  let lastGranulePosition = 0
   while (offset < bytes.length) {
     if (offset + 27 > bytes.length || readAscii(bytes, offset, 4) !== 'OggS') throw new Error('Invalid Ogg page')
     const segmentCount = bytes[offset + 26]!
@@ -171,6 +231,17 @@ export function parseOggOpus(bytes: Uint8Array): ParsedOggOpus {
     const bodyEnd = tableEnd + bodyLength
     if (bodyEnd > bytes.length) throw new Error('Truncated Ogg page body')
     const page = bytes.slice(offset, bodyEnd)
+    const headerType = page[5]!
+    const pageView = new DataView(page.buffer, page.byteOffset, page.byteLength)
+    const pageSerial = pageView.getUint32(14, true)
+    const sequence = pageView.getUint32(18, true)
+    if (serial === undefined) serial = pageSerial
+    if (pageSerial !== serial) throw new Error('Ogg serial number mismatch')
+    if (sequence !== expectedSequence) throw new Error('Ogg page sequence mismatch')
+    if (offset === 0) firstHeaderType = headerType
+    lastHeaderType = headerType
+    lastGranulePosition = readUint64(page, 6)
+    expectedSequence++
     const expectedCrc = new DataView(page.buffer).getUint32(22, true)
     new DataView(page.buffer).setUint32(22, 0, true)
     if (oggCrc32(page) !== expectedCrc) throw new Error('Ogg page CRC mismatch')
@@ -185,23 +256,29 @@ export function parseOggOpus(bytes: Uint8Array): ParsedOggOpus {
     }
     offset = bodyEnd
   }
+  if ((firstHeaderType & 0x02) === 0) throw new Error('Ogg stream is missing BOS')
+  if ((lastHeaderType & 0x04) === 0) throw new Error('Ogg stream is missing EOS')
+  if (current.length) throw new Error('Ogg stream ends with a continued packet')
   const head = packets[0]
   const tags = packets[1]
   if (!head || head.length < 19 || readAscii(head, 0, 8) !== 'OpusHead') throw new Error('Ogg stream does not contain OpusHead')
   if (!tags || readAscii(tags, 0, 8) !== 'OpusTags') throw new Error('Ogg stream does not contain OpusTags')
   const sampleRate = new DataView(head.buffer, head.byteOffset, head.byteLength).getUint32(12, true)
-  return { sampleRate, packets }
+  return { sampleRate, preSkip: new DataView(head.buffer, head.byteOffset, head.byteLength).getUint16(10, true), lastGranulePosition, packets }
 }
 
-function muxOggOpus(packets: EncodedOpusPacket[], sampleRate: number): Uint8Array {
+const OPUS_CLOCK_RATE = 48000
+const OPUS_FRAME_SAMPLES = 960
+
+function muxOggOpus(packets: EncodedOpusPacket[], head: Uint8Array): Uint8Array {
   const serial = 0x534f4e49
   const pages: Uint8Array[] = []
-  pages.push(createOggPage(opusHead(sampleRate), serial, 0, 0x02, 0))
+  pages.push(createOggPage(head, serial, 0, 0x02, 0))
   pages.push(createOggPage(opusTags(), serial, 0, 0, 1))
   let granule = 0
   packets.forEach((packet, index) => {
     granule += packet.sampleCount
-    pages.push(createOggPage(packet.data, serial, granule, 0, index + 2))
+    pages.push(createOggPage(packet.data, serial, granule, index === packets.length - 1 ? 0x04 : 0, index + 2))
   })
   const result = new Uint8Array(pages.reduce((sum, page) => sum + page.length, 0))
   let offset = 0
@@ -210,16 +287,6 @@ function muxOggOpus(packets: EncodedOpusPacket[], sampleRate: number): Uint8Arra
     offset += page.length
   }
   return result
-}
-
-function opusHead(sampleRate: number): Uint8Array {
-  const bytes = new Uint8Array(19)
-  bytes.set(new TextEncoder().encode('OpusHead'), 0)
-  bytes[8] = 1
-  bytes[9] = 1
-  new DataView(bytes.buffer).setUint16(10, 0, true)
-  new DataView(bytes.buffer).setUint32(12, sampleRate, true)
-  return bytes
 }
 
 function opusTags(): Uint8Array {
@@ -271,6 +338,11 @@ function writeUint64(bytes: Uint8Array, offset: number, value: number): void {
 
 function readAscii(bytes: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(offset, offset + length))
+}
+
+function readUint64(bytes: Uint8Array, offset: number): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  return view.getUint32(offset, true) + view.getUint32(offset + 4, true) * 0x100000000
 }
 
 function rms(samples: Float32Array): number {
