@@ -150,7 +150,8 @@ function parseObject(bytes: Uint8Array): Record<string, any> {
 }
 
 function isUint32(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 0xffffffff }
-function isKnownProfile(value: unknown): boolean { return ['auto', 'robust', 'balanced', 'turbo', 'near_ultrasonic', 'ultrasonic_experimental', 'custom'].includes(String(value)) }
+export const KNOWN_PROFILE_KEYS = ['auto', 'robust', 'balanced', 'turbo', 'near_ultrasonic', 'ultrasonic_experimental', 'fast_data_experimental', 'custom'] as const
+export function isKnownProfile(value: unknown): boolean { return KNOWN_PROFILE_KEYS.includes(String(value) as typeof KNOWN_PROFILE_KEYS[number]) }
 
 export function encodeTestFileStart(payload: TestFileStartPayload): Uint8Array {
   const jsonStr = JSON.stringify(payload)

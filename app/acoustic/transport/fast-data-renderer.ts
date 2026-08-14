@@ -1,12 +1,13 @@
 import { appendFileHeaderMetaToBuffer, blockToBinary, createEncoder } from 'luby-transform'
 import { AcousticPacketizer } from '../framing/packetizer'
 import { AcousticFrameType, encodeFrame } from '../protocol/frame'
-import { getFastDataConfig, ParallelMultitoneModem } from '../modulation/parallel-multitone-modem'
+import { ModemProfileKey } from '../modulation/modem'
+import { createDataTxPhy } from './data-phy'
 
 export interface FastRenderedWaveform { pcm: Float32Array; sampleRate: number; durationSec: number; totalFrames: number; sourceBlocks: number; transmittedBlocks: number }
 
 export function renderFastPayloadToPcm(data: Uint8Array, filename = 'file.bin', contentType = 'application/octet-stream', sampleRate = 48000, extraBlocks?: number): FastRenderedWaveform {
-  const modem = new ParallelMultitoneModem(getFastDataConfig(sampleRate))
+  const modem = createDataTxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, sampleRate)
   const sessionId = 0x534f4e49
   const packetizer = new AcousticPacketizer(sessionId)
   const canonical = appendFileHeaderMetaToBuffer(data, { filename, contentType })
@@ -14,7 +15,7 @@ export function renderFastPayloadToPcm(data: Uint8Array, filename = 'file.bin', 
   const fountain = encoder.fountain()
   const redundancy = extraBlocks ?? Math.max(4, Math.ceil(encoder.k * 0.2))
   const frames: Float32Array[] = []
-  const header = packetizer.createSessionHeaderFrame({ protocolVersion: 1, sessionId, filename, contentType, originalSize: data.length, encodedSize: encoder.compressed.length, fileChecksum: encoder.checksum, totalFountainK: encoder.k, modemProfile: 'fast_data_experimental' })
+  const header = packetizer.createSessionHeaderFrame({ protocolVersion: 1, sessionId, filename, contentType, originalSize: data.length, encodedSize: encoder.compressed.length, fileChecksum: encoder.checksum, totalFountainK: encoder.k, modemProfile: ModemProfileKey.FAST_DATA_EXPERIMENTAL })
   frames.push(modem.encode(header).samples)
   for (let sequence = 1; sequence <= encoder.k + redundancy; sequence++) {
     const block = fountain.next().value

@@ -31,8 +31,11 @@ import {
   encodeProfileReject,
   decodeProfileReject,
   getFastDataConfig,
-  ParallelMultitoneModem,
   ParallelMultitoneStreamDecoder,
+  createDataTxPhy,
+  createDataRxPhy,
+  encodeWithDataTxPhy,
+  type DataPhyConfig,
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
 } from '~/acoustic'
@@ -169,6 +172,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   let controlRxDecoder: BFSKStreamDecoder | null = null
   let dataRxDecoder: BFSKStreamDecoder | null = null
   let fastDataRxDecoder: ParallelMultitoneStreamDecoder | null = null
+  let negotiatedDataRxPhy: BFSKStreamDecoder | ParallelMultitoneStreamDecoder | null = null
+  const verifiedDataConfig = ref<DataPhyConfig | null>(null)
   const activeVerificationModulation = ref<'MFSK' | 'MULTITONE'>('MFSK')
   let rxSampleRateOverride: number | null = null
 
@@ -180,11 +185,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     return new BFSKAcousticModem(config)
   }
 
-  function getDataModem(sampleRate?: number): BFSKAcousticModem {
+  function getDataTxPhy(sampleRate?: number) {
     const rate = sampleRate || transmitter?.getSampleRate() || receiver?.getSampleRate() || 48000
-    const config = getProfileConfig(selectedProfile.value, rate)
-    config.gain = outputGain.value
-    return new BFSKAcousticModem(config)
+    return createDataTxPhy(selectedProfile.value, rate, verifiedDataConfig.value || undefined)
   }
 
   function currentProfileFingerprint(profile = selectedProfile.value, sampleRate = transmitter?.getSampleRate() || 48000): string {
@@ -202,6 +205,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     if (profileVerificationStatus.value === 'READY') profileVerificationStatus.value = 'UNVERIFIED'
     verifiedProfile.value = null
     verifiedConfigFingerprint.value = null
+    verifiedDataConfig.value = null
     verifiedAt.value = null
   }
 
@@ -212,8 +216,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     if (!controlRxDecoder || controlRxDecoder.getSampleRate() !== rate) {
       controlRxDecoder = new BFSKStreamDecoder(getControlModem(rate))
     }
-    if (!dataRxDecoder || dataRxDecoder.getSampleRate() !== rate) {
-      dataRxDecoder = new BFSKStreamDecoder(getDataModem(rate))
+    const profile = verifiedProfile.value || selectedProfile.value
+    if (profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL) {
+      if (!negotiatedDataRxPhy || !(negotiatedDataRxPhy instanceof ParallelMultitoneStreamDecoder)) negotiatedDataRxPhy = createDataRxPhy(profile, rate, verifiedDataConfig.value || undefined)
+      fastDataRxDecoder = negotiatedDataRxPhy as ParallelMultitoneStreamDecoder
+    } else if (!dataRxDecoder || dataRxDecoder.getSampleRate() !== rate) {
+      dataRxDecoder = createDataRxPhy(profile, rate, verifiedDataConfig.value || undefined) as BFSKStreamDecoder
+      negotiatedDataRxPhy = dataRxDecoder
     }
   }
 
@@ -267,7 +276,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     // 2. Data channel decode (negotiated dataModem)
     if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN) {
-      const dataFrames = receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && activeVerificationModulation.value === 'MULTITONE'
+      const dataFrames = (receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && activeVerificationModulation.value === 'MULTITONE') || verifiedProfile.value === ModemProfileKey.FAST_DATA_EXPERIMENTAL
         ? fastDataRxDecoder!.pushSamples(samples)
         : dataRxDecoder!.pushSamples(samples)
       if (dataFrames.length > 0) {
@@ -284,6 +293,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     if (!decoderWorker) decoderWorker = createLTDecodeWorker()
     controlRxDecoder = null
     dataRxDecoder = null
+    fastDataRxDecoder = null
+    negotiatedDataRxPhy = null
     rxSampleRateOverride = sampleRate
     receiveMode.value = ReceiveMode.NORMAL_RECEIVE
     dspStage.value = 'SEARCHING_FOR_SIGNAL'
@@ -359,7 +370,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     await transmitter.start()
 
     const controlModem = getControlModem(transmitter.getSampleRate())
-    const dataModem = getDataModem(transmitter.getSampleRate())
+    const dataModem = getDataTxPhy(transmitter.getSampleRate())
 
     // Step 1: Transmit TEST_FILE_START over ROBUST control channel (Requirement 1 & 4)
     const startPayloadBytes = encodeTestFileStart({
@@ -418,7 +429,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           frameBuffer = encodeFrame(transferSessionId.value!, AcousticFrameType.DATA, sequence, blockBytes)
         }
 
-        const audioFrame = dataModem.encode(frameBuffer)
+        const audioFrame = encodeWithDataTxPhy(dataModem, frameBuffer)
         framePromises.push(transmitter!.playFrame(audioFrame))
         sequence++
       }
@@ -470,7 +481,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   async function transmitProfileProbes(proposal: any) {
     if (!transmitter) transmitter = new AudioTransmitter()
     await transmitter.start()
-    const modem = proposal.profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? new ParallelMultitoneModem(proposal.config) : new BFSKAcousticModem(proposal.config)
+    const modem = createDataTxPhy(proposal.profile, transmitter.getSampleRate(), proposal.config)
     for (let sequence = 1; sequence <= proposal.probeCount; sequence++) {
       const probe = { protocolVersion: 1, sessionId: proposal.sessionId, verificationNonce: proposal.verificationNonce, profile: proposal.profile, probeSequence: sequence, totalProbes: proposal.probeCount }
       await transmitter.playFrame(modem.encode(createProfileProbeFrame(probe, proposal.sessionId, sequence)))
@@ -497,6 +508,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     const config = profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? getFastDataConfig(sampleRate) : getProfileConfig(profile, sampleRate)
     const proposal = { protocolVersion: 1, sessionId: transferSessionId.value, verificationNonce, profile, sampleRate, config, probeCount, configFingerprint: currentProfileFingerprint(profile, sampleRate) }
     proposal.config.gain = outputGain.value
+    verifiedDataConfig.value = { ...proposal.config }
     await transmitControlVerificationFrame(encodeFrame(transferSessionId.value, AcousticFrameType.PROFILE_PROPOSE, 1, encodeProfileProposal(proposal)))
     receiveMode.value = ReceiveMode.PROFILE_REPORT_WAIT
     if (!receiver) receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
@@ -516,6 +528,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       profileVerificationStatus.value = 'FAILED'
       verifiedProfile.value = null
       verifiedConfigFingerprint.value = null
+      verifiedDataConfig.value = null
       if (reason) linkCheckMessage.value = `DATA profile verification failed: ${reason}`
       if (receiver) receiver.stop()
       receiveMode.value = ReceiveMode.IDLE
@@ -567,7 +580,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     if (!transmitter) transmitter = new AudioTransmitter()
     await transmitter.start()
-    const dataModem = getDataModem(transmitter.getSampleRate())
+    const txPhy = getDataTxPhy(transmitter.getSampleRate())
 
     const { createEncoder } = await import('luby-transform')
     const encoder = createEncoder(canonicalPayload, sliceSize.value, true)
@@ -601,7 +614,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         frameBuffer = encodeFrame(transferSessionId.value!, AcousticFrameType.DATA, sequence, blockBytes)
       }
 
-      const audioFrame = dataModem.encode(frameBuffer)
+      const audioFrame = encodeWithDataTxPhy(txPhy, frameBuffer)
       liveSamples.value = audioFrame.samples
       transmitter!.enqueueFrame(audioFrame)
 
@@ -610,7 +623,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       sequence++
 
       if (isTransmitting.value) {
-        setTimeout(step, dataModem.config.symbolDurationMs * 2)
+        setTimeout(step, txPhy.config.symbolDurationMs * 2)
       }
     }
 
@@ -654,6 +667,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     await receiver.start(selectedMicId.value || undefined)
     controlRxDecoder = null
     dataRxDecoder = null
+    fastDataRxDecoder = null
+    negotiatedDataRxPhy = null
     ensureRxDecoders()
     isListening.value = true
     activePage.value = 'receive'
@@ -731,8 +746,14 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         activeVerificationModulation.value = proposal.profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? 'MULTITONE' : 'MFSK'
         if (receiver) receiver.stop()
         await transmitControlVerificationFrame(encodeFrame(proposal.sessionId, AcousticFrameType.PROFILE_ACCEPT, 1, encodeProfileAccept(proposal)))
-        if (activeVerificationModulation.value === 'MULTITONE') fastDataRxDecoder = new ParallelMultitoneStreamDecoder({ ...proposal.config, sampleRate: actualRate } as any)
-        else dataRxDecoder = new BFSKStreamDecoder(new BFSKAcousticModem({ ...proposal.config, sampleRate: actualRate } as any))
+        verifiedDataConfig.value = { ...proposal.config }
+        if (activeVerificationModulation.value === 'MULTITONE') {
+          fastDataRxDecoder = createDataRxPhy(proposal.profile, actualRate, proposal.config) as ParallelMultitoneStreamDecoder
+          negotiatedDataRxPhy = fastDataRxDecoder
+        } else {
+          dataRxDecoder = createDataRxPhy(proposal.profile, actualRate, proposal.config) as BFSKStreamDecoder
+          negotiatedDataRxPhy = dataRxDecoder
+        }
         receiveMode.value = ReceiveMode.PROFILE_PROBE_LISTEN
         if (isListening.value && receiver) await receiver.start(selectedMicId.value || undefined)
       } else if (proposal) {
