@@ -1,6 +1,22 @@
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import packageJson from './package.json'
+import { createBuildMetadata } from './app/config/build-metadata'
 import { pwa } from './app/config/pwa'
 import { appDescription } from './app/constants/index'
+
+function resolveBuildSha(): string | undefined {
+  const configuredSha = process.env.GIT_COMMIT_SHA || process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_SHA
+  if (configuredSha?.trim()) return configuredSha
+
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+const buildMetadata = createBuildMetadata(packageJson.version, resolveBuildSha(), process.env.NODE_ENV || 'production')
 
 const baseURL = process.env.NUXT_APP_BASE_URL || (process.env.NODE_ENV === 'production' ? '/sonic-transfer/' : '/')
 
@@ -23,7 +39,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      appVersion: '1.0.0',
+      buildMetadata,
     },
   },
 

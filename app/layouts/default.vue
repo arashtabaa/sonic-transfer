@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import type { BuildMetadata } from '~/config/build-metadata'
 import { useAcousticSessionStore } from '~/stores/acousticSession'
 
 const store = useAcousticSessionStore()
+const buildMetadata = useRuntimeConfig().public.buildMetadata as BuildMetadata
 </script>
 
 <template>
@@ -56,6 +58,10 @@ const store = useAcousticSessionStore()
     <main class="h-full w-full flex-1 px-4 py-2">
       <slot />
     </main>
+
+    <footer class="px-4 pt-3 text-center text-10px text-neutral-500 font-mono">
+      Sonic Transfer v{{ buildMetadata.version }} · Build: {{ buildMetadata.buildSha }}
+    </footer>
 
     <!-- Mobile Bottom Fixed Navigation Bar -->
     <div class="sm:hidden fixed bottom-0 left-0 right-0 z-50 bg-neutral-900/95 border-t border-neutral-800 backdrop-blur-lg px-4 py-2 flex justify-around items-center text-xs font-semibold text-neutral-400 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
