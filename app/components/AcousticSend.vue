@@ -139,7 +139,7 @@ async function exportOggArtifact() {
         <button
           class="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-xs font-bold text-white transition hover:bg-blue-500 shadow-md active:scale-95 disabled:opacity-50"
           :disabled="store.sessionStep === SessionStep.VERIFYING_LINK"
-          @click="store.runAcousticLinkCheck"
+          @click="() => store.runAcousticLinkCheck()"
         >
           <span class="i-carbon-connection-signal text-sm" />
           {{ store.sessionStep === SessionStep.VERIFYING_LINK ? 'Verifying Link...' : 'Verify Acoustic Link' }}
@@ -148,7 +148,7 @@ async function exportOggArtifact() {
         <button
           class="flex items-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-950/30 px-5 py-2.5 text-xs font-bold text-emerald-300 transition hover:bg-emerald-900/40 shadow-md active:scale-95 disabled:opacity-50"
           :disabled="store.sessionStep === SessionStep.VERIFYING_LINK"
-          @click="store.startAdaptiveLink"
+          @click="() => store.startAdaptiveLink()"
         >
           <span class="i-carbon-connect text-sm" />
           {{ store.adaptiveHandshakeState === 'READY' ? 'Adaptive Link Ready' : 'Connect & Calibrate' }}

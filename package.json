@@ -15,7 +15,12 @@
     "packages:build": "pnpm -F './packages/*' run build",
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
-    "test": "vitest"
+    "test": "vitest",
+    "test:ci:shard1": "vitest run test/acoustic.test.ts test/adaptive-handshake.test.ts test/artifact.test.ts test/build-metadata.test.ts test/data-phy-factory.test.ts test/fast-multitone.test.ts",
+    "test:ci:shard2": "vitest run test/fast-multitone-impairment.test.ts test/impairment.test.ts test/linktest.test.ts test/ogg.test.ts test/pilot-multitone.test.ts test/profile-characterization.test.ts",
+    "test:ci:shard3": "vitest run test/profile-impairment-matrix.test.ts test/profile-verification.test.ts test/profile-verification-runtime.test.ts test/roundtrip.test.ts test/runtime-closure.test.ts test/session-lifecycle-runtime.test.ts",
+    "test:ci:shard4": "vitest run test/slicing.test.ts test/stream-decoder.test.ts test/testpayload.test.ts test/throughput.test.ts test/transport.test.ts test/two-device-harness.test.ts",
+    "test:ci": "pnpm run test:ci:shard1 && pnpm run test:ci:shard2 && pnpm run test:ci:shard3 && pnpm run test:ci:shard4"
   },
   "dependencies": {
     "birpc": "^2.0.19",
