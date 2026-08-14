@@ -111,4 +111,17 @@ describe('pilot-assisted constant-power multitone V2', () => {
     }
   })
 
+  it('commits the 100-frame bidirectional cross-rate stress gate', () => {
+    for (const [txRate, rxRate] of [[48000, 44100], [44100, 48000]] as const) {
+      const txModem = new PilotMultitoneModem(getPilotMultitoneConfig(txRate))
+      const parts = Array.from({ length: 100 }, (_, i) => txModem.encode(encodeFrame(0x534f4e49, AcousticFrameType.DATA, i + 1, new Uint8Array((i % 3 + 1) * 3).fill(i))).samples)
+      const joined = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0)); let write = 0
+      for (const part of parts) { joined.set(part, write); write += part.length }
+      const resampled = new Float32Array(Math.round(joined.length * rxRate / txRate))
+      for (let i = 0; i < resampled.length; i++) { const source = i * txRate / rxRate; const left = Math.floor(source); const fraction = source - left; resampled[i] = (joined[left] || 0) * (1 - fraction) + (joined[Math.min(left + 1, joined.length - 1)] || 0) * fraction }
+      const frames = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(rxRate))).pushSamples(resampled)
+      expect(frames.map(frame => frame.sequence)).toEqual(Array.from({ length: 100 }, (_, i) => i + 1))
+    }
+  })
+
 })
