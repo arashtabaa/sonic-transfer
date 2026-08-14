@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AcousticFrameType, AdaptiveHandshakeRuntime, FrequencyProbeAnalyzer, FrequencyProbeRenderer, HALF_DUPLEX_TIMING, StreamingFrequencyProbeAnalyzer, actualCarrierFrequencies, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeFrequencyProbe, decodeFrequencyReport, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeFrequencyProbe, encodeFrequencyReport, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, selectMeasuredV2Config, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
+import { AcousticFrameType, AdaptiveHandshakeController, AdaptiveHandshakeRuntime, FrequencyProbeAnalyzer, FrequencyProbeRenderer, HALF_DUPLEX_TIMING, StreamingFrequencyProbeAnalyzer, actualCarrierFrequencies, classifyLevel, createAdaptivePilotConfig, decodeCalibrationCommand, decodeCalibrationPing, decodeFrequencyProbe, decodeFrequencyReport, decodeLevelReport, encodeCalibrationCommand, encodeCalibrationPing, encodeFrequencyProbe, encodeFrequencyReport, encodeLevelReport, fingerprintAdaptiveConfig, selectFrequencyBand, selectGain, selectMeasuredV2Config, type FrequencyMeasurement, type GainMeasurement } from '../app/acoustic'
 
 const sha = 'a'.repeat(64)
 
@@ -94,5 +94,20 @@ describe('adaptive acoustic handshake V1', () => {
     const selected = selectMeasuredV2Config(measurements, 44100, 0.26)
     expect(selected?.config.carrierCount).toBe(4)
     expect(selected?.carrierFrequencies).toEqual(frequencies)
+  })
+
+  it('drives repeated calibration attempts through injected acoustic I/O', async () => {
+    const sentGains: number[] = []
+    const controller = new AdaptiveHandshakeController({
+      runtime: new AdaptiveHandshakeRuntime(() => 1),
+      transport: {
+        sendRobust: async (_frame, gain) => { sentGains.push(gain) },
+        waitForLevelReport: async (_context, _sequence) => ({ protocolVersion: 1, controlSessionId: 10, calibrationNonce: 20, pingSequence: 1, signalPeak: 0.2, signalRms: 0.1, noiseRms: 0.01, snrDb: 20, clippingFraction: 0, crcValid: true, classification: 'GOOD' as const }),
+      },
+      setCandidateGain: () => {},
+    })
+    const result = await controller.runGainSweep({ controlSessionId: 10, calibrationNonce: 20, role: 'INITIATOR', startedAt: 0 }, 'INITIATOR_TO_RESPONDER')
+    expect(result.selectedGain).toBe(0.12)
+    expect(sentGains.length).toBe(24)
   })
 })

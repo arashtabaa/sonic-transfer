@@ -47,6 +47,7 @@ import {
   AdaptiveHandshakeRuntime,
   type AdaptiveHandshakeState,
   type AdaptiveLinkContext,
+  AdaptiveHandshakeController,
   TransferCompletionCache,
 } from '~/acoustic'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
@@ -388,7 +389,19 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   function startAdaptiveLink() {
     adaptiveLinkContext.value = { controlSessionId: generateSecureRandomUint32(), calibrationNonce: generateSecureRandomUint32(), role: 'INITIATOR', startedAt: Date.now() }
     adaptiveCandidateGain.value = 0.12
-    adaptiveHandshake.start(adaptiveLinkContext.value.controlSessionId, adaptiveLinkContext.value.calibrationNonce)
+    const controller = new AdaptiveHandshakeController({
+      runtime: adaptiveHandshake,
+      transport: {
+        sendRobust: async (frame, gain) => {
+          adaptiveCandidateGain.value = gain
+          await transmitControlVerificationFrame(frame)
+        },
+        waitForLevelReport: async () => null,
+      },
+      setCandidateGain: gain => { adaptiveCandidateGain.value = gain },
+      eventSink: event => { linkCheckMessage.value = event.message },
+    })
+    controller.start(adaptiveLinkContext.value)
     adaptiveHandshakeState.value = adaptiveHandshake.state
     adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
     linkCheckMessage.value = 'Adaptive link: starting robust control bootstrap. Application acoustic gain is negotiated; system volume remains user-controlled.'
