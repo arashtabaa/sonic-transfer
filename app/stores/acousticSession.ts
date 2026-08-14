@@ -6,7 +6,6 @@ import {
   AudioReceiver,
   AudioTransmitter,
   BFSKAcousticModem,
-  decodeTestFileComplete,
   decodeTestFileStart,
   encodeFrame,
   encodeTestFileComplete,
@@ -15,7 +14,6 @@ import {
   MetricsCollector,
   ModemProfileKey,
   BFSKStreamDecoder,
-  validateTestFileCompleteFrame,
   createProfileProbeFrame,
   createChannelReportFrame,
   decodeProfileProposal,
@@ -45,6 +43,9 @@ import {
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
   SessionLifecycleRuntime,
+  HALF_DUPLEX_TIMING,
+  AdaptiveHandshakeRuntime,
+  type AdaptiveHandshakeState,
 } from '~/acoustic'
 import { AcousticLinkTester } from '~/acoustic/transport/link-test'
 import { createLTDecodeWorker } from '~/composables/lt-decode'
@@ -107,6 +108,7 @@ async function computeSha256Hex(buffer: Uint8Array): Promise<string> {
 
 export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const sessionLifecycle = new SessionLifecycleRuntime()
+  const adaptiveHandshake = new AdaptiveHandshakeRuntime()
   // --- Persistent Preferences ---
   const selectedProfile = useLocalStorage<ModemProfileKey>('sonic-profile', ModemProfileKey.BALANCED)
   const outputGain = useLocalStorage<number>('sonic-gain', 0.7)
@@ -120,6 +122,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const transferPhase = ref<TransferPhase>(TransferPhase.IDLE)
   const dspStage = ref<DspStage>('MICROPHONE_READY')
   const linkCheckMessage = ref<string | null>(null)
+  const adaptiveHandshakeState = ref<AdaptiveHandshakeState>('IDLE')
+  const adaptiveHandshakeEvents = ref<Array<{ atMs: number; state: AdaptiveHandshakeState; message: string; evidence?: Record<string, unknown> }>>([])
+  const adaptiveLocalGain = ref<number | null>(null)
+  const adaptiveRemoteGain = ref<number | null>(null)
+  const adaptiveSelectedBand = ref<{ startFreq: number; endFreq: number; carrierCount: number } | null>(null)
+  const adaptiveConfigFingerprint = ref<string | null>(null)
+  const duplexMode = 'HALF_DUPLEX_TDD' as const
 
   // Canonical Session ID & Nonce for Active Transfer (Requirement 4 & 5 & 6)
   const transferSessionId = ref<number | null>(null)
@@ -174,7 +183,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const expectedSha256 = ref<string | null>(null)
   const receivedSha256 = ref<string | null>(null)
   const isIntegrityVerified = ref(false)
-  const pendingTransferCompletion = ref<{ transferSessionId: number; expectedSha256: string; actualSha256: string; blocksReceived: number } | null>(null)
+  const pendingTransferCompletion = ref<{ transferSessionId: number; expectedSha256: string; actualSha256: string; blocksReceived: number; completedAt: number } | null>(null)
   const pollSequence = ref(0)
 
   // Singletons & Audio Contexts
@@ -185,6 +194,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const metricsCollector = new MetricsCollector()
   const liveStats = ref(metricsCollector.getStats())
   let statsInterval: any = null
+  let controlWindowTimer: ReturnType<typeof setTimeout> | null = null
   let wakeLock: any = null
   let controlRxDecoder: BFSKStreamDecoder | null = null
   let dataRxDecoder: BFSKStreamDecoder | null = null
@@ -290,7 +300,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     // 2. Data channel decode (negotiated dataModem)
-    if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN || receiveMode.value === ReceiveMode.CONTROL_RX_WINDOW) {
+    if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN) {
       const dataFrames = (receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && activeVerificationModulation.value === 'MULTITONE') || verifiedProfile.value === ModemProfileKey.FAST_DATA_EXPERIMENTAL
         ? negotiatedDataRxPhy!.pushSamples(samples)
         : dataRxDecoder!.pushSamples(samples)
@@ -368,6 +378,14 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }, 10000)
   }
 
+  function startAdaptiveLink() {
+    adaptiveHandshake.start(generateSecureRandomUint32(), generateSecureRandomUint32())
+    adaptiveHandshakeState.value = adaptiveHandshake.state
+    adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+    linkCheckMessage.value = 'Adaptive link: starting robust control bootstrap. Application acoustic gain is negotiated; system volume remains user-controlled.'
+    void runAcousticLinkCheck()
+  }
+
   // --- Real Finite DATA Bursts + ACK Control Windows (Requirement 1, 4, 5, 6) ---
   async function runTestFileTransfer() {
     sessionStep.value = SessionStep.TEST_TRANSFERRING
@@ -403,8 +421,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     await transmitter.playFrame(startAudioFrame)
     await transmitter.waitUntilDrained()
 
-    // 200ms guard interval before starting test DATA bursts
-    await new Promise(r => setTimeout(r, 200))
+    // Centralized half-duplex guard before starting test DATA bursts.
+    await new Promise(r => setTimeout(r, HALF_DUPLEX_TIMING.TX_TO_RX_GUARD_MS))
 
     const { createEncoder } = await import('luby-transform')
     const canonicalPayload = appendFileHeaderMetaToBuffer(testPayload, {
@@ -461,8 +479,15 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       transferPhase.value = TransferPhase.TURNAROUND_TO_RX
       transmitter!.stop()
 
-      // Listen for TEST_FILE_COMPLETE frame in ACK window
-      receiveMode.value = ReceiveMode.TEST_COMPLETE_WAIT
+      // Production feedback handshake: POLL -> STATUS/END.
+      pollSequence.value++
+      const pollFrame = encodeFrame(transferSessionId.value!, AcousticFrameType.TRANSFER_POLL, pollSequence.value, encodeTransferPoll({ protocolVersion: 1, transferSessionId: transferSessionId.value!, pollSequence: pollSequence.value, framesPlayed: framesPlayed.value, lastDataSequence: sequence - 1 }))
+      await transmitter!.start()
+      await transmitter!.playFrame(controlModem.encode(pollFrame))
+      await transmitter!.waitUntilDrained()
+      transmitter!.stop()
+      await new Promise(resolve => setTimeout(resolve, HALF_DUPLEX_TIMING.TX_TO_RX_GUARD_MS))
+      receiveMode.value = ReceiveMode.CONTROL_RX_WINDOW
       if (!receiver) {
         receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
       } else {
@@ -473,7 +498,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       transferPhase.value = TransferPhase.ACK_WINDOW
 
       // ACK Window timeout: Resume next DATA burst if not complete
-      setTimeout(async () => {
+      controlWindowTimer = setTimeout(async () => {
+        controlWindowTimer = null
         if (sessionStep.value === SessionStep.TEST_TRANSFERRING && isTransmitting.value) {
           if (receiver) receiver.stop()
           receiveMode.value = ReceiveMode.IDLE
@@ -481,7 +507,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           await transmitter!.start()
           runBurst()
         }
-      }, 3000)
+      }, HALF_DUPLEX_TIMING.CONTROL_WINDOW_MS)
     }
 
     runBurst()
@@ -668,7 +694,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         await transmitter!.waitUntilDrained()
         transferPhase.value = TransferPhase.TURNAROUND_TO_RX
         transmitter!.stop()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await new Promise(resolve => setTimeout(resolve, HALF_DUPLEX_TIMING.TX_TO_RX_GUARD_MS))
         receiveMode.value = ReceiveMode.CONTROL_RX_WINDOW
         if (!receiver) receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
         else receiver.setOnAudioDataCallback(processCentralAudioData)
@@ -681,7 +707,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           transferPhase.value = TransferPhase.TURNAROUND_TO_TX
           await transmitter!.start()
           void runBurst()
-        }, 3000)
+        }, HALF_DUPLEX_TIMING.CONTROL_WINDOW_MS)
       }
     }
 
@@ -690,6 +716,10 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function stopTransmission() {
     isTransmitting.value = false
+    if (controlWindowTimer) {
+      clearTimeout(controlWindowTimer)
+      controlWindowTimer = null
+    }
     if (transmitter) transmitter.stop()
     releaseWakeLock()
     if (!isListening.value) activePage.value = 'idle'
@@ -918,6 +948,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         ack.sessionId === controlSessionId.value &&
         ack.nonce === activeProbeNonce.value
       ) {
+        if (adaptiveHandshake.state === 'BOOTSTRAP_CONTROL_LINK') {
+          adaptiveHandshake.recordControlLink(true)
+          adaptiveHandshakeState.value = adaptiveHandshake.state
+          adaptiveHandshakeEvents.value = [...adaptiveHandshake.events]
+        }
         sessionStep.value = SessionStep.LINK_VERIFIED
         linkCheckMessage.value = `LINK VERIFIED! Real acoustic ACK received (Session: ${ack.sessionId}, Nonce: ${ack.nonce}).`
         if (receiver) receiver.stop()
@@ -926,31 +961,11 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       }
     }
 
-    // Requirement 2 & 5: Handle TEST_FILE_COMPLETE ACK validation on Sender
-    if (parsed.frame.frameType === AcousticFrameType.TEST_FILE_COMPLETE) {
-      const payload = decodeTestFileComplete(parsed.frame.payload)
-      const isValid = validateTestFileCompleteFrame(
-        parsed.frame,
-        payload,
-        transferSessionId.value || 0,
-        activeTestTransferId.value || 0,
-        EXPECTED_TEST_SHA256,
-      )
+    // TEST_FILE_COMPLETE is retained as a legacy wire type for compatibility,
+    // but it can never unlock a transfer. Completion is only TRANSFER_END.
 
-      if (isValid) {
-        // SENDER UNLOCKS TEST_TRANSFER_VERIFIED ONLY UPON RECEIVING REAL ACOUSTIC ACK!
-        stopTransmission()
-        if (receiver) receiver.stop()
-        sessionStep.value = SessionStep.TEST_TRANSFER_VERIFIED
-        transferPhase.value = TransferPhase.COMPLETE
-      }
-    }
-
-    if (parsed.frame.frameType === AcousticFrameType.END && activeTransferSessionId.value === parsed.frame.sessionId) {
-      stopTransmission()
-      transferPhase.value = TransferPhase.COMPLETE
-      return
-    }
+    // END is a DATA-side marker only. Successful completion requires a valid,
+    // session-bound TRANSFER_END with matching expected and actual SHA-256.
 
     if (parsed.frame.frameType === AcousticFrameType.TRANSFER_POLL) {
       const poll = decodeTransferPoll(parsed.frame.payload)
@@ -958,13 +973,17 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       const response = pendingTransferCompletion.value
         ? encodeFrame(activeTransferSessionId.value, AcousticFrameType.TRANSFER_END, poll.pollSequence, encodeTransferEnd({ protocolVersion: 1, transferSessionId: activeTransferSessionId.value, expectedSha256: pendingTransferCompletion.value.expectedSha256, actualSha256: pendingTransferCompletion.value.actualSha256, pass: true, blocksReceived: pendingTransferCompletion.value.blocksReceived }))
         : encodeFrame(activeTransferSessionId.value, AcousticFrameType.TRANSFER_STATUS, poll.pollSequence, encodeTransferStatus({ protocolVersion: 1, transferSessionId: activeTransferSessionId.value, blocksReceived: totalBlocksReceived.value, decodedCount: decodedCount.value, complete: false }))
-      void transmitTransferFeedback(response)
+      void new Promise(resolve => setTimeout(resolve, HALF_DUPLEX_TIMING.POLL_RESPONSE_DELAY_MS)).then(() => transmitTransferFeedback(response))
       return
     }
 
     if (parsed.frame.frameType === AcousticFrameType.TRANSFER_END) {
       const completion = decodeTransferEnd(parsed.frame.payload)
       if (completion && completion.transferSessionId === activeTransferSessionId.value && completion.expectedSha256 === sendSha256.value && completion.actualSha256 === sendSha256.value && completion.pass) {
+        if (controlWindowTimer) {
+          clearTimeout(controlWindowTimer)
+          controlWindowTimer = null
+        }
         stopTransmission()
         receiveMode.value = ReceiveMode.IDLE
         transferPhase.value = TransferPhase.COMPLETE
@@ -980,7 +999,8 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
 
     if (parsed.sessionHeader) {
-      if (activeTransferSessionId.value !== null && parsed.sessionHeader.sessionId !== activeTransferSessionId.value) return
+      if (activeTransferSessionId.value !== null && parsed.sessionHeader.sessionId !== activeTransferSessionId.value && !pendingTransferCompletion.value) return
+      if (pendingTransferCompletion.value && parsed.sessionHeader.sessionId !== pendingTransferCompletion.value.transferSessionId) pendingTransferCompletion.value = null
       receiveHeader.value = parsed.sessionHeader
       transferSessionId.value = parsed.sessionHeader.sessionId
       activeTransferSessionId.value = parsed.sessionHeader.sessionId
@@ -1026,7 +1046,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
             downloadedContentType.value = meta.contentType
             dspStage.value = 'COMPLETE'
 
-            pendingTransferCompletion.value = { transferSessionId: activeTransferSessionId.value!, expectedSha256: expectedSha256.value!, actualSha256: actualHash, blocksReceived: totalBlocksReceived.value }
+            pendingTransferCompletion.value = { transferSessionId: activeTransferSessionId.value!, expectedSha256: expectedSha256.value!, actualSha256: actualHash, blocksReceived: totalBlocksReceived.value, completedAt: Date.now() }
             // Completion is cached and emitted only in response to the next valid TRANSFER_POLL.
             if (
               downloadedFilename.value === 'sonic-test-fixture.bin' &&
@@ -1078,6 +1098,13 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     transferPhase,
     dspStage,
     linkCheckMessage,
+    adaptiveHandshakeState,
+    adaptiveHandshakeEvents,
+    adaptiveLocalGain,
+    adaptiveRemoteGain,
+    adaptiveSelectedBand,
+    adaptiveConfigFingerprint,
+    duplexMode,
     isTransmitting,
     isListening,
     liveSamples,
@@ -1110,6 +1137,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     setFile,
     skipVerification,
     runAcousticLinkCheck,
+    startAdaptiveLink,
     runTestFileTransfer,
     verifyDataProfile,
     verifyAutoProfile,

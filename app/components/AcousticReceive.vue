@@ -45,7 +45,7 @@ async function importAudioFile(file?: File) {
           @click="toggleReceive"
         >
           <span :class="store.isListening ? 'i-carbon-stop-filled' : 'i-carbon-microphone'" class="text-base" />
-          {{ store.isListening ? 'Stop Receiver' : 'Prepare Receiver' }}
+          {{ store.isListening ? 'Stop Receiver' : 'Listen for Sonic Link' }}
         </button>
       </div>
 

@@ -146,6 +146,15 @@ async function exportOggArtifact() {
         </button>
 
         <button
+          class="flex items-center gap-2 rounded-xl border border-emerald-500/50 bg-emerald-950/30 px-5 py-2.5 text-xs font-bold text-emerald-300 transition hover:bg-emerald-900/40 shadow-md active:scale-95 disabled:opacity-50"
+          :disabled="store.sessionStep === SessionStep.VERIFYING_LINK"
+          @click="store.startAdaptiveLink"
+        >
+          <span class="i-carbon-connect text-sm" />
+          {{ store.adaptiveHandshakeState === 'READY' ? 'Adaptive Link Ready' : 'Connect & Calibrate' }}
+        </button>
+
+        <button
           class="text-xs rounded-lg border border-purple-500/40 px-3 py-2 text-purple-300 hover:bg-purple-950/30 disabled:opacity-40"
           :disabled="store.sessionStep === SessionStep.NOT_READY || store.sessionStep === SessionStep.VERIFYING_LINK"
           @click="verifySelectedDataProfile"
@@ -168,6 +177,15 @@ async function exportOggArtifact() {
 
       <div v-if="store.linkCheckMessage" class="rounded-lg border border-blue-500/30 bg-blue-950/20 p-3 text-xs text-blue-300 font-mono">
         {{ store.linkCheckMessage }}
+      </div>
+
+      <div v-if="store.adaptiveHandshakeEvents.length" class="rounded-lg border border-emerald-500/30 bg-emerald-950/10 p-3 text-xs font-mono">
+        <div class="mb-2 font-sans font-bold uppercase tracking-wider text-10px text-emerald-300">Acoustic dialogue · HALF_DUPLEX_TDD</div>
+        <div v-for="(event, index) in store.adaptiveHandshakeEvents.slice(-6)" :key="`${event.atMs}-${index}`" class="flex gap-2 text-neutral-300">
+          <span class="text-emerald-400">{{ event.state }}</span>
+          <span>{{ event.message }}</span>
+        </div>
+        <p class="mt-2 text-neutral-500">Application acoustic gain is negotiated. Device system volume is controlled by the user.</p>
       </div>
     </div>
 

@@ -309,6 +309,20 @@ async function runCalibration() {
       </button>
     </div>
 
+    <div class="rounded-xl border border-blue-500/30 bg-blue-950/10 p-4 font-mono text-xs">
+      <div class="mb-3 text-10px font-sans font-bold uppercase tracking-wider text-blue-300">Runtime Identity & Adaptive Link</div>
+      <div class="grid grid-cols-1 gap-2 text-neutral-300 sm:grid-cols-2 lg:grid-cols-4">
+        <span>Duplex: <strong class="text-blue-300">{{ store.duplexMode }}</strong></span>
+        <span>Handshake: <strong class="text-emerald-300">{{ store.adaptiveHandshakeState }}</strong></span>
+        <span>App TX gain: <strong>{{ store.adaptiveLocalGain ?? 'unavailable' }}</strong></span>
+        <span>Remote gain: <strong>{{ store.adaptiveRemoteGain ?? 'unavailable' }}</strong></span>
+        <span>Selected band: <strong>{{ store.adaptiveSelectedBand ? `${store.adaptiveSelectedBand.startFreq}-${store.adaptiveSelectedBand.endFreq} Hz` : 'unavailable' }}</strong></span>
+        <span>Profile: <strong>{{ store.selectedProfile }}</strong></span>
+        <span>Fingerprint: <strong>{{ store.adaptiveConfigFingerprint || 'unavailable' }}</strong></span>
+        <span>Physical acoustic validation: <strong class="text-amber-300">NOT TESTED</strong></span>
+      </div>
+    </div>
+
     <!-- Frequency Lab (Phase 7 & 8) -->
     <div class="rounded-xl border border-purple-500/30 bg-neutral-900/80 p-4 sm:p-5 flex flex-col gap-4">
       <div class="flex items-center justify-between border-b border-neutral-800 pb-3">

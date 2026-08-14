@@ -20,7 +20,77 @@ export enum AcousticFrameType {
   DATA = 0x11,
   END = 0x12,
   PROFILE_PROBE_END = 0x13,
+  CALIBRATION_COMMAND = 0x14,
+  CALIBRATION_PING = 0x15,
+  LEVEL_REPORT = 0x16,
 }
+
+export type CalibrationPhase = 'START_GAIN_SWEEP' | 'LOCK_GAIN' | 'SWITCH_DIRECTION' | 'START_FREQUENCY_SCAN' | 'FINISH' | 'ABORT'
+export type CalibrationDirection = 'INITIATOR_TO_RESPONDER' | 'RESPONDER_TO_INITIATOR'
+export type LevelClassification = 'NOT_HEARD' | 'TOO_WEAK' | 'GOOD' | 'TOO_LOUD' | 'UNUSABLE'
+
+export interface CalibrationCommandPayload {
+  protocolVersion: number
+  controlSessionId: number
+  calibrationNonce: number
+  phase: CalibrationPhase
+  direction: CalibrationDirection
+  sequence: number
+}
+
+export interface CalibrationPingPayload {
+  protocolVersion: number
+  controlSessionId: number
+  calibrationNonce: number
+  pingSequence: number
+  txAppGain: number
+}
+
+export interface LevelReportPayload {
+  protocolVersion: number
+  controlSessionId: number
+  calibrationNonce: number
+  pingSequence: number
+  signalPeak: number
+  signalRms: number
+  noiseRms: number | null
+  snrDb: number | null
+  clippingFraction: number
+  crcValid: boolean
+  classification: LevelClassification
+}
+
+const CALIBRATION_PHASES: CalibrationPhase[] = ['START_GAIN_SWEEP', 'LOCK_GAIN', 'SWITCH_DIRECTION', 'START_FREQUENCY_SCAN', 'FINISH', 'ABORT']
+const CALIBRATION_DIRECTIONS: CalibrationDirection[] = ['INITIATOR_TO_RESPONDER', 'RESPONDER_TO_INITIATOR']
+const LEVEL_CLASSIFICATIONS: LevelClassification[] = ['NOT_HEARD', 'TOO_WEAK', 'GOOD', 'TOO_LOUD', 'UNUSABLE']
+
+export function encodeCalibrationCommand(payload: CalibrationCommandPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeCalibrationCommand(bytes: Uint8Array): CalibrationCommandPayload | null {
+  try {
+    const p = parseObject(bytes) as CalibrationCommandPayload
+    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && CALIBRATION_PHASES.includes(p.phase) && CALIBRATION_DIRECTIONS.includes(p.direction) && isPositiveSequence(p.sequence) ? p : null
+  } catch { return null }
+}
+
+export function encodeCalibrationPing(payload: CalibrationPingPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeCalibrationPing(bytes: Uint8Array): CalibrationPingPayload | null {
+  try {
+    const p = parseObject(bytes) as CalibrationPingPayload
+    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && isPositiveSequence(p.pingSequence) && isGain(p.txAppGain) ? p : null
+  } catch { return null }
+}
+
+export function encodeLevelReport(payload: LevelReportPayload): Uint8Array { return new TextEncoder().encode(JSON.stringify(payload)) }
+export function decodeLevelReport(bytes: Uint8Array): LevelReportPayload | null {
+  try {
+    const p = parseObject(bytes) as LevelReportPayload
+    const validNullable = (value: unknown) => value === null || (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+    return p.protocolVersion === PROTOCOL_VERSION && isUint32(p.controlSessionId) && isUint32(p.calibrationNonce) && isPositiveSequence(p.pingSequence) && Number.isFinite(p.signalPeak) && p.signalPeak >= 0 && Number.isFinite(p.signalRms) && p.signalRms >= 0 && validNullable(p.noiseRms) && (p.snrDb === null || (typeof p.snrDb === 'number' && Number.isFinite(p.snrDb))) && Number.isFinite(p.clippingFraction) && p.clippingFraction >= 0 && p.clippingFraction <= 1 && typeof p.crcValid === 'boolean' && LEVEL_CLASSIFICATIONS.includes(p.classification) ? p : null
+  } catch { return null }
+}
+
+function isPositiveSequence(value: unknown): value is number { return Number.isInteger(value) && Number(value) >= 1 && Number(value) <= 1_000_000 }
+function isGain(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 }
 
 export interface AcousticFrame {
   version: number
