@@ -473,7 +473,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   // --- Sender Transmission ---
   async function startTransmission(data?: Uint8Array, filename?: string, contentType?: string) {
     if (isTransmitting.value) return
-    if (selectedProfile.value !== ModemProfileKey.ROBUST && profileVerificationStatus.value !== 'READY') {
+    if (profileVerificationStatus.value !== 'READY') {
       linkCheckMessage.value = `${selectedProfile.value} DATA profile is not READY; run production profile verification first.`
       return
     }
