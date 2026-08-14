@@ -29,6 +29,7 @@ describe('Sonic Audio Artifact Lab & Non-Regression Suite', () => {
       ModemProfileKey.ROBUST,
       48000,
       500,
+      30,
     )
 
     expect(renderResult.pcm).toBeInstanceOf(Float32Array)
