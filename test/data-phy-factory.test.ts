@@ -14,6 +14,7 @@ import {
   encodeProfileProbeEnd,
   encodeProfileReject,
   getFastDataConfig,
+  getPilotMultitoneConfig,
 } from '../app/acoustic'
 
 describe('canonical data PHY factory', () => {
@@ -21,6 +22,12 @@ describe('canonical data PHY factory', () => {
     const config = getFastDataConfig()
     expect(dataPhyKind(createDataTxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, 48000, config))).toBe('GUARDED_MULTITONE')
     expect(dataPhyKind(createDataRxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, 44100, config))).toBe('GUARDED_MULTITONE')
+  })
+
+  it('routes the explicit V2 configuration to pilot multitone', () => {
+    const config = getPilotMultitoneConfig()
+    expect(dataPhyKind(createDataTxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, 48000, config))).toBe('PILOT_MULTITONE_V2')
+    expect(dataPhyKind(createDataRxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, 44100, config))).toBe('PILOT_MULTITONE_V2')
   })
 })
 

@@ -3,6 +3,7 @@ import { ModemProfileKey } from './modem'
 
 export interface ParallelMultitoneConfig {
   profileKey: ModemProfileKey.FAST_DATA_EXPERIMENTAL
+  modulationId?: 'GUARDED_MULTITONE_V1'
   sampleRate: number
   startFreq: number
   endFreq: number

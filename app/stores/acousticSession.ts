@@ -30,12 +30,12 @@ import {
   decodeProfileProbeEnd,
   encodeProfileReject,
   decodeProfileReject,
-  getFastDataConfig,
-  ParallelMultitoneStreamDecoder,
+  getPilotMultitoneConfig,
   createDataTxPhy,
   createDataRxPhy,
   encodeWithDataTxPhy,
   type DataPhyConfig,
+  type DataRxPhy,
   type AudioDiagnosticsInfo,
   type SessionHeaderPayload,
 } from '~/acoustic'
@@ -114,6 +114,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   // Canonical Session ID & Nonce for Active Transfer (Requirement 4 & 5 & 6)
   const transferSessionId = ref<number | null>(null)
+  const controlSessionId = ref<number | null>(null)
+  const verificationSessionId = ref<number | null>(null)
+  const activeTransferSessionId = ref<number | null>(null)
   const activeProbeNonce = ref<number | null>(null)
   const activeTestTransferId = ref<number | null>(null)
   const profileVerificationStatus = ref<'UNVERIFIED' | 'READY' | 'MARGINAL' | 'FAILED'>('UNVERIFIED')
@@ -146,6 +149,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   const sendTotalBytes = ref(0)
   const sendSha256 = ref<string | null>(null)
   const framesSent = ref(0)
+  const framesGenerated = ref(0)
+  const framesQueued = ref(0)
+  const framesPlayed = ref(0)
   const bytesSent = ref(0)
 
   // Receiver Session State
@@ -171,8 +177,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
   let wakeLock: any = null
   let controlRxDecoder: BFSKStreamDecoder | null = null
   let dataRxDecoder: BFSKStreamDecoder | null = null
-  let fastDataRxDecoder: ParallelMultitoneStreamDecoder | null = null
-  let negotiatedDataRxPhy: BFSKStreamDecoder | ParallelMultitoneStreamDecoder | null = null
+  let negotiatedDataRxPhy: DataRxPhy | null = null
   const verifiedDataConfig = ref<DataPhyConfig | null>(null)
   const activeVerificationModulation = ref<'MFSK' | 'MULTITONE'>('MFSK')
   let rxSampleRateOverride: number | null = null
@@ -192,9 +197,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
   function currentProfileFingerprint(profile = selectedProfile.value, sampleRate = transmitter?.getSampleRate() || 48000): string {
     if (profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL) {
-      const config = getFastDataConfig(sampleRate)
+      const config = getPilotMultitoneConfig(sampleRate)
       config.gain = outputGain.value
-      return JSON.stringify({ protocolVersion: 1, modulation: 'GUARDED_MULTITONE_V1', profile, startFreq: config.startFreq, endFreq: config.endFreq, carrierCount: config.carrierCount, symbolDurationMs: config.symbolDurationMs, guardMs: config.guardMs, gain: config.gain, txSampleRate: sampleRate })
+      return JSON.stringify({ protocolVersion: 1, modulation: (config as any).modulationId || 'GUARDED_MULTITONE_V1', profile, startFreq: config.startFreq, endFreq: config.endFreq, carrierCount: config.carrierCount, symbolDurationMs: config.symbolDurationMs, guardMs: config.guardMs, gain: config.gain, txSampleRate: sampleRate })
     }
     const config = getProfileConfig(profile === ModemProfileKey.AUTO ? ModemProfileKey.BALANCED : profile, sampleRate)
     config.gain = outputGain.value
@@ -218,8 +223,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     }
     const profile = verifiedProfile.value || selectedProfile.value
     if (profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL) {
-      if (!negotiatedDataRxPhy || !(negotiatedDataRxPhy instanceof ParallelMultitoneStreamDecoder)) negotiatedDataRxPhy = createDataRxPhy(profile, rate, verifiedDataConfig.value || undefined)
-      fastDataRxDecoder = negotiatedDataRxPhy as ParallelMultitoneStreamDecoder
+      if (!negotiatedDataRxPhy) negotiatedDataRxPhy = createDataRxPhy(profile, rate, verifiedDataConfig.value || undefined)
     } else if (!dataRxDecoder || dataRxDecoder.getSampleRate() !== rate) {
       dataRxDecoder = createDataRxPhy(profile, rate, verifiedDataConfig.value || undefined) as BFSKStreamDecoder
       negotiatedDataRxPhy = dataRxDecoder
@@ -277,7 +281,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     // 2. Data channel decode (negotiated dataModem)
     if (receiveMode.value === ReceiveMode.NORMAL_RECEIVE || receiveMode.value === ReceiveMode.TEST_DATA_RECEIVE || receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN) {
       const dataFrames = (receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && activeVerificationModulation.value === 'MULTITONE') || verifiedProfile.value === ModemProfileKey.FAST_DATA_EXPERIMENTAL
-        ? fastDataRxDecoder!.pushSamples(samples)
+        ? negotiatedDataRxPhy!.pushSamples(samples)
         : dataRxDecoder!.pushSamples(samples)
       if (dataFrames.length > 0) {
         dspStage.value = 'CARRIER_LOCKED'
@@ -293,7 +297,6 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     if (!decoderWorker) decoderWorker = createLTDecodeWorker()
     controlRxDecoder = null
     dataRxDecoder = null
-    fastDataRxDecoder = null
     negotiatedDataRxPhy = null
     rxSampleRateOverride = sampleRate
     receiveMode.value = ReceiveMode.NORMAL_RECEIVE
@@ -308,6 +311,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     // Requirement 4 & 5: One canonical Session ID and nonce generated via crypto.getRandomValues()
     transferSessionId.value = generateSecureRandomUint32()
+    controlSessionId.value = transferSessionId.value
     activeProbeNonce.value = generateSecureRandomUint32()
     packetizer = new AcousticPacketizer(transferSessionId.value)
 
@@ -359,6 +363,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     // Generate test session ID and testTransferId via crypto.getRandomValues()
     transferSessionId.value = generateSecureRandomUint32()
+    activeTransferSessionId.value = transferSessionId.value
     activeTestTransferId.value = generateSecureRandomUint32()
     packetizer = new AcousticPacketizer(transferSessionId.value)
 
@@ -505,7 +510,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     profileVerificationStatus.value = 'UNVERIFIED'
     receivedProbeSequences.clear()
     profileVerificationReport.value = null
-    const config = profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? getFastDataConfig(sampleRate) : getProfileConfig(profile, sampleRate)
+    const config = profile === ModemProfileKey.FAST_DATA_EXPERIMENTAL ? getPilotMultitoneConfig(sampleRate) : getProfileConfig(profile, sampleRate)
     const proposal = { protocolVersion: 1, sessionId: transferSessionId.value, verificationNonce, profile, sampleRate, config, probeCount, configFingerprint: currentProfileFingerprint(profile, sampleRate) }
     proposal.config.gain = outputGain.value
     verifiedDataConfig.value = { ...proposal.config }
@@ -513,6 +518,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     receiveMode.value = ReceiveMode.PROFILE_REPORT_WAIT
     if (!receiver) receiver = new AudioReceiver({ onAudioData: processCentralAudioData })
     else receiver.setOnAudioDataCallback(processCentralAudioData)
+    verificationSessionId.value = transferSessionId.value
     const result = new Promise<boolean>((resolve) => { profileVerificationResolver = resolve })
     await receiver.start(selectedMicId.value || undefined)
     profileVerificationPhase = 'ACCEPT'
@@ -566,10 +572,14 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     // Requirement 8: Compute SHA-256 over ORIGINAL FILE BYTES!
     sendSha256.value = await computeSha256Hex(rawData)
     framesSent.value = 0
+    framesGenerated.value = 0
+    framesQueued.value = 0
+    framesPlayed.value = 0
     bytesSent.value = 0
 
     // Requirement 4: Canonical session ID per transfer
     transferSessionId.value = generateSecureRandomUint32()
+    activeTransferSessionId.value = transferSessionId.value
     packetizer = new AcousticPacketizer(transferSessionId.value)
 
     // Requirement 8: Prepare canonical transfer payload = appendFileHeaderMetaToBuffer(rawData, meta)
@@ -591,11 +601,10 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     activePage.value = 'send'
     await requestWakeLock()
 
-    const step = async () => {
-      if (!isTransmitting.value) return
-
-      let frameBuffer: Uint8Array
-      if (sequence % 10 === 0) {
+    const runBurst = async () => {
+      for (let burst = 0; burst < 8 && isTransmitting.value; burst++) {
+        let frameBuffer: Uint8Array
+        if (sequence % 10 === 0) {
         frameBuffer = packetizer!.createSessionHeaderFrame({
           protocolVersion: 1,
           sessionId: transferSessionId.value!,
@@ -608,26 +617,28 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
           totalFountainK: encoder.k,
           modemProfile: selectedProfile.value,
         })
-      } else {
-        const block = fountain.next().value
-        const blockBytes = blockToBinary(block)
-        frameBuffer = encodeFrame(transferSessionId.value!, AcousticFrameType.DATA, sequence, blockBytes)
+        } else {
+          const block = fountain.next().value
+          const blockBytes = blockToBinary(block)
+          frameBuffer = encodeFrame(transferSessionId.value!, AcousticFrameType.DATA, sequence, blockBytes)
+        }
+        const audioFrame = encodeWithDataTxPhy(txPhy, frameBuffer)
+        liveSamples.value = audioFrame.samples
+        framesGenerated.value++
+        framesQueued.value++
+        bytesSent.value += frameBuffer.length
+        sequence++
+        await transmitter!.playFrame(audioFrame)
+        framesPlayed.value++
+        framesSent.value = framesPlayed.value
       }
-
-      const audioFrame = encodeWithDataTxPhy(txPhy, frameBuffer)
-      liveSamples.value = audioFrame.samples
-      transmitter!.enqueueFrame(audioFrame)
-
-      framesSent.value++
-      bytesSent.value += frameBuffer.length
-      sequence++
-
       if (isTransmitting.value) {
-        setTimeout(step, txPhy.config.symbolDurationMs * 2)
+        await transmitter!.waitUntilDrained()
+        setTimeout(() => { void runBurst() }, 200)
       }
     }
 
-    step()
+    void runBurst()
   }
 
   function stopTransmission() {
@@ -667,7 +678,6 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     await receiver.start(selectedMicId.value || undefined)
     controlRxDecoder = null
     dataRxDecoder = null
-    fastDataRxDecoder = null
     negotiatedDataRxPhy = null
     ensureRxDecoders()
     isListening.value = true
@@ -688,17 +698,21 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       return
     }
 
-    // Requirement 4: Reject foreign session packets once locked (NO FALLBACK IDs 888/999!)
-    if (transferSessionId.value && parsed.frame.sessionId !== transferSessionId.value) {
-      console.warn('Rejected foreign session frame', parsed.frame.sessionId)
+    const frameType = parsed.frame.frameType
+    const verificationFrame = frameType === AcousticFrameType.PROFILE_PROPOSE || frameType === AcousticFrameType.PROFILE_ACCEPT || frameType === AcousticFrameType.PROFILE_REJECT || frameType === AcousticFrameType.PROFILE_PROBE_END || frameType === AcousticFrameType.CHANNEL_REPORT || frameType === AcousticFrameType.LINK_PROBE || frameType === AcousticFrameType.LINK_ACK
+    const transferFrame = frameType === AcousticFrameType.SESSION_HEADER || frameType === AcousticFrameType.DATA || frameType === AcousticFrameType.END || frameType === AcousticFrameType.TEST_FILE_START || frameType === AcousticFrameType.TEST_FILE_COMPLETE
+    if (verificationFrame && verificationSessionId.value !== null && parsed.frame.sessionId !== verificationSessionId.value && frameType !== AcousticFrameType.LINK_PROBE) return
+    if (transferFrame && frameType !== AcousticFrameType.SESSION_HEADER && activeTransferSessionId.value !== null && parsed.frame.sessionId !== activeTransferSessionId.value) {
+      console.warn('Rejected foreign transfer frame', parsed.frame.sessionId)
       return
     }
+    if (transferFrame && frameType !== AcousticFrameType.SESSION_HEADER && activeTransferSessionId.value === null && frameType !== AcousticFrameType.TEST_FILE_START) return
 
     dspStage.value = 'CRC_VALID'
     metricsCollector.recordPacket(parsed.frame.payload.length, true)
 
     const profileProbe = parsed.frame.frameType === AcousticFrameType.LINK_PROBE ? decodeProfileProbe(parsed.frame.payload) : null
-    if (profileProbe && receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && profileVerificationNonce.value === profileProbe.verificationNonce && profileProbe.sessionId === transferSessionId.value && profileProbe.profile === verifiedProfile.value) {
+    if (profileProbe && receiveMode.value === ReceiveMode.PROFILE_PROBE_LISTEN && profileVerificationNonce.value === profileProbe.verificationNonce && profileProbe.sessionId === verificationSessionId.value && profileProbe.profile === verifiedProfile.value) {
       if (!receivedProbeSequences.has(profileProbe.probeSequence)) receivedProbeSequences.add(profileProbe.probeSequence)
       profileProbeValid.value = receivedProbeSequences.size
       return
@@ -706,7 +720,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     if (parsed.frame.frameType === AcousticFrameType.PROFILE_PROBE_END) {
       const end = decodeProfileProbeEnd(parsed.frame.payload)
-      if (end && end.sessionId === transferSessionId.value && end.verificationNonce === profileVerificationNonce.value && end.profile === verifiedProfile.value) {
+      if (end && end.sessionId === verificationSessionId.value && end.verificationNonce === profileVerificationNonce.value && end.profile === verifiedProfile.value) {
         const stats = activeVerificationModulation.value === 'MULTITONE' ? null : dataRxDecoder?.getStats()
         const valid = Math.min(end.attemptedProbes, receivedProbeSequences.size)
         const report = {
@@ -738,6 +752,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       const proposal = decodeProfileProposal(parsed.frame.payload)
       const actualRate = receiver?.getSampleRate() || rxSampleRateOverride || 48000
       if (proposal && validateProfileProposal(proposal, actualRate)) {
+        verificationSessionId.value = proposal.sessionId
         profileVerificationNonce.value = proposal.verificationNonce
         profileProbeValid.value = 0
         receivedProbeSequences.clear()
@@ -748,8 +763,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
         await transmitControlVerificationFrame(encodeFrame(proposal.sessionId, AcousticFrameType.PROFILE_ACCEPT, 1, encodeProfileAccept(proposal)))
         verifiedDataConfig.value = { ...proposal.config }
         if (activeVerificationModulation.value === 'MULTITONE') {
-          fastDataRxDecoder = createDataRxPhy(proposal.profile, actualRate, proposal.config) as ParallelMultitoneStreamDecoder
-          negotiatedDataRxPhy = fastDataRxDecoder
+          negotiatedDataRxPhy = createDataRxPhy(proposal.profile, actualRate, proposal.config)
         } else {
           dataRxDecoder = createDataRxPhy(proposal.profile, actualRate, proposal.config) as BFSKStreamDecoder
           negotiatedDataRxPhy = dataRxDecoder
@@ -767,7 +781,7 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     if (parsed.frame.frameType === AcousticFrameType.PROFILE_ACCEPT) {
       const proposal = decodeProfileAccept(parsed.frame.payload)
-      if (proposal && proposal.verificationNonce === profileVerificationNonce.value && proposal.sessionId === transferSessionId.value) {
+      if (proposal && proposal.verificationNonce === profileVerificationNonce.value && proposal.sessionId === verificationSessionId.value) {
         if (profileVerificationTimer) clearTimeout(profileVerificationTimer)
         profileVerificationTimer = null
         profileVerificationPhase = null
@@ -783,14 +797,14 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
 
     if (parsed.frame.frameType === AcousticFrameType.PROFILE_REJECT) {
       const rejection = decodeProfileReject(parsed.frame.payload)
-      if (rejection && rejection.sessionId === transferSessionId.value && rejection.verificationNonce === profileVerificationNonce.value && rejection.profile === verifiedProfile.value) finishProfileVerification(false, rejection.reason)
+      if (rejection && rejection.sessionId === verificationSessionId.value && rejection.verificationNonce === profileVerificationNonce.value && rejection.profile === verifiedProfile.value) finishProfileVerification(false, rejection.reason)
       return
     }
 
     if (parsed.frame.frameType === AcousticFrameType.CHANNEL_REPORT) {
       const report = decodeChannelReport(parsed.frame.payload)
       const expectedClass = report ? classifyProfileReport(report.crcValid, report.attemptedProbes) : null
-      if (report && report.verificationNonce === profileVerificationNonce.value && report.sessionId === transferSessionId.value && report.profile === verifiedProfile.value && report.configFingerprint === verifiedConfigFingerprint.value && report.classification === expectedClass && report.crcValid + report.crcInvalid === report.attemptedProbes) {
+      if (report && report.verificationNonce === profileVerificationNonce.value && report.sessionId === verificationSessionId.value && report.profile === verifiedProfile.value && report.configFingerprint === verifiedConfigFingerprint.value && report.classification === expectedClass && report.crcValid + report.crcInvalid === report.attemptedProbes) {
         profileVerificationReport.value = report
         profileVerificationStatus.value = report.classification
         verifiedConfigFingerprint.value = currentProfileFingerprint(report.profile as ModemProfileKey, transmitter?.getSampleRate() || 48000)
@@ -883,9 +897,16 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
       }
     }
 
+    if (parsed.frame.frameType === AcousticFrameType.END && activeTransferSessionId.value === parsed.frame.sessionId) {
+      stopTransmission()
+      transferPhase.value = TransferPhase.COMPLETE
+      return
+    }
+
     if (parsed.sessionHeader) {
       receiveHeader.value = parsed.sessionHeader
       transferSessionId.value = parsed.sessionHeader.sessionId
+      activeTransferSessionId.value = parsed.sessionHeader.sessionId
       fountainK.value = parsed.sessionHeader.totalFountainK
       expectedSha256.value = parsed.sessionHeader.sha256Hex || null
       dspStage.value = 'FRAME_RECEIVING'
@@ -967,6 +988,18 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
                   }
                 }, 200)
               }, 200)
+            } else {
+              if (receiver) receiver.stop()
+              receiveMode.value = ReceiveMode.IDLE
+              setTimeout(async () => {
+                if (!transmitter) transmitter = new AudioTransmitter()
+                await transmitter.start()
+                const controlModem = getControlModem(transmitter.getSampleRate())
+                await transmitter.playFrame(controlModem.encode(encodeFrame(activeTransferSessionId.value!, AcousticFrameType.END, 1, new Uint8Array())))
+                await transmitter.waitUntilDrained()
+                transmitter.stop()
+                if (isListening.value && receiver) await receiver.start(selectedMicId.value || undefined)
+              }, 200)
             }
           }
         }
@@ -1019,6 +1052,9 @@ export const useAcousticSessionStore = defineStore('acousticSession', () => {
     sendTotalBytes,
     sendSha256,
     framesSent,
+    framesGenerated,
+    framesQueued,
+    framesPlayed,
     bytesSent,
     receiveHeader,
     fountainK,
