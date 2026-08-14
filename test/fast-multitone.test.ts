@@ -96,4 +96,24 @@ describe('FAST_DATA_EXPERIMENTAL guarded parallel multitone', () => {
     expect(reconstructed).not.toBeNull()
     expect(createHash('sha256').update(reconstructed!).digest('hex')).toBe(createHash('sha256').update(payload).digest('hex'))
   }, 120000)
+
+  it('reconstructs the 8 KiB fixture through whole-stream V2 cross-rate resampling in both directions', async () => {
+    const payload = generateTestPayload()
+    for (const [txRate, rxRate] of [[48000, 44100], [44100, 48000]] as const) {
+      const txConfig = getPilotMultitoneConfig(txRate)
+      const rendered = renderFastPayloadToPcm(payload, 'sonic-test-fixture.bin', 'application/octet-stream', txRate, 10, txConfig)
+      const resampled = new Float32Array(Math.round(rendered.pcm.length * rxRate / txRate))
+      for (let i = 0; i < resampled.length; i++) { const source = i * txRate / rxRate; const left = Math.floor(source); const fraction = source - left; resampled[i] = (rendered.pcm[left] || 0) * (1 - fraction) + (rendered.pcm[Math.min(left + 1, rendered.pcm.length - 1)] || 0) * fraction }
+      const decoder = createDataRxPhy(ModemProfileKey.FAST_DATA_EXPERIMENTAL, rxRate, getPilotMultitoneConfig(rxRate))
+      const packetizer = new AcousticPacketizer()
+      const fountain = createDecoder()
+      let reconstructed: Uint8Array | null = null
+      for (const frame of decoder.pushSamples(resampled)) {
+        const parsed = packetizer.parseIncomingBuffer(encodeFrame(frame.sessionId, frame.frameType, frame.sequence, frame.payload))
+        if (parsed.fountainBlock && fountain.addBlock(parsed.fountainBlock)) { const [bytes] = readFileHeaderMetaFromBuffer(fountain.getDecoded()!); reconstructed = bytes; break }
+      }
+      expect(reconstructed).not.toBeNull()
+      expect(createHash('sha256').update(reconstructed!).digest('hex')).toBe(createHash('sha256').update(payload).digest('hex'))
+    }
+  }, 180000)
 })

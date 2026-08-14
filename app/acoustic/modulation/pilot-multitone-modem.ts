@@ -75,9 +75,9 @@ export class PilotMultitoneModem {
     return { samples, durationMs: samples.length / this.config.sampleRate * 1000 }
   }
 
-  analyzeSymbol(samples: Float32Array, offset: number, channel?: CarrierDiagnostic[], activeSamples = this.samplesPerSymbol): PilotSymbolDiagnostic | null {
+  analyzeSymbol(samples: Float32Array, offset: number, channel?: CarrierDiagnostic[], activeSamples = this.samplesPerSymbol, phaseOffset = offset): PilotSymbolDiagnostic | null {
     if (offset < 0 || offset + activeSamples > samples.length) return null
-    const correlations = this.carrierFrequencies.map(f => correlate(samples, offset, activeSamples, f, this.config.sampleRate))
+    const correlations = this.carrierFrequencies.map(f => correlate(samples, offset, activeSamples, f, this.config.sampleRate, phaseOffset))
     const magnitudes = correlations.map(z => Math.hypot(z.re, z.im))
     const reference = channel?.map(c => Math.max(c.referenceMagnitude, 1e-9)) || magnitudes.map(value => Math.max(value, 1e-9))
     const normalizedMagnitudes = magnitudes.map((value, i) => value / reference[i]!)
@@ -90,9 +90,9 @@ export class PilotMultitoneModem {
     return { magnitudes, normalizedMagnitudes, decisions, confidence: Math.min(...magnitudes) / Math.max(noiseEstimate, 1e-9), heuristicNoiseEstimate: noiseEstimate, hammingWeight: decisions.reduce((a, b) => a + b, 0 as number), peakPcm: Math.max(...Array.from(samples.subarray(offset, offset + activeSamples)).map(Math.abs)) }
   }
 
-  estimateChannel(samples: Float32Array, offset: number, symbolSpacing = this.stride, activeSamples = this.samplesPerSymbol): CarrierDiagnostic[] {
-    const first = this.analyzeRaw(samples, offset, activeSamples)
-    const second = this.analyzeRaw(samples, offset + symbolSpacing, activeSamples)
+  estimateChannel(samples: Float32Array, offset: number, symbolSpacing = this.stride, activeSamples = this.samplesPerSymbol, phaseOffset = offset): CarrierDiagnostic[] {
+    const first = this.analyzeRaw(samples, offset, activeSamples, phaseOffset)
+    const second = this.analyzeRaw(samples, offset + symbolSpacing, activeSamples, phaseOffset + symbolSpacing)
     return first.map((z, i) => {
       const estimate = { re: (z.re - second[i]!.re) / 2, im: (z.im - second[i]!.im) / 2 }
       const magnitude = Math.hypot(estimate.re, estimate.im)
@@ -100,19 +100,19 @@ export class PilotMultitoneModem {
     })
   }
 
-  estimatePilotChannel(samples: Float32Array, offset: number, activeSamples = this.samplesPerSymbol): CarrierDiagnostic[] {
-    return this.analyzeRaw(samples, offset, activeSamples).map((estimate, i) => {
+  estimatePilotChannel(samples: Float32Array, offset: number, activeSamples = this.samplesPerSymbol, phaseOffset = offset): CarrierDiagnostic[] {
+    return this.analyzeRaw(samples, offset, activeSamples, phaseOffset).map((estimate, i) => {
       const magnitude = Math.hypot(estimate.re, estimate.im)
       return { frequency: this.carrierFrequencies[i]!, referenceMagnitude: magnitude, phaseRadians: Math.atan2(estimate.im, estimate.re), noiseEstimate: 0, confidence: magnitude / 1e-9, usable: magnitude > 1e-5 }
     })
   }
 
-  private analyzeRaw(samples: Float32Array, offset: number, activeSamples = this.samplesPerSymbol) { return this.carrierFrequencies.map(f => correlate(samples, offset, activeSamples, f, this.config.sampleRate)) }
+  private analyzeRaw(samples: Float32Array, offset: number, activeSamples = this.samplesPerSymbol, phaseOffset = offset) { return this.carrierFrequencies.map(f => correlate(samples, offset, activeSamples, f, this.config.sampleRate, phaseOffset)) }
 
   private renderSymbol(target: Float32Array, offset: number, activeSamples: number, signs: number[]): void {
     const amplitude = this.config.gain / this.config.carrierCount
     for (let sample = 0; sample < activeSamples; sample++) {
-      const t = sample / this.config.sampleRate
+      const t = (offset + sample) / this.config.sampleRate
       let value = 0
       for (let carrier = 0; carrier < signs.length; carrier++) value += signs[carrier]! * Math.cos(2 * Math.PI * this.carrierFrequencies[carrier]! * t) * amplitude
       target[offset + sample] = value
@@ -124,6 +124,8 @@ export class PilotMultitoneStreamDecoder {
   private buffer = new Float32Array(0)
   private bufferOriginExact = 0
   private nextFrameOriginExact: number | null = null
+  private acquisitionSearchIndex = 0
+  private pendingCandidate: { index: number; origin: number; exactOrigin: number } | null = null
   private channel: CarrierDiagnostic[] | null = null
   private readonly pilotDiagnostics: Array<{ oldMagnitude: number; newMagnitude: number; oldPhase: number; newPhase: number; confidence: number; usable: boolean }> = []
   private readonly timingDiagnostics: Array<{ origin: number; frameSymbols: number; consumed: number; nextOrigin: number; bufferOrigin: number }> = []
@@ -133,14 +135,30 @@ export class PilotMultitoneStreamDecoder {
     const merged = new Float32Array(this.buffer.length + samples.length); merged.set(this.buffer); merged.set(samples, this.buffer.length); this.buffer = merged
     const frames: AcousticFrame[] = []
     while (true) {
-      const candidate = this.findPreamble()
-      if (!candidate) { const keep = Math.min(this.buffer.length, this.modem.stride * 6); const discarded = this.buffer.length - keep; this.buffer = this.buffer.slice(discarded); this.bufferOriginExact += discarded; break }
-      const parsed = this.tryDecode(candidate.origin)
-      if (!parsed) {
-        const minimumCandidateSamples = this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 16)
-        if (this.buffer.length > candidate.index + minimumCandidateSamples) { this.buffer = this.buffer.slice(candidate.index + 1); this.bufferOriginExact += candidate.index + 1; continue }
+      const candidate = this.pendingCandidate || this.findPreamble()
+      if (!candidate) {
+        const timingSearchRadius = Math.ceil(this.modem.timingStride * 4)
+        const predicted = this.nextFrameOriginExact === null ? null : this.nextFrameOriginExact - this.bufferOriginExact
+        const keepFrom = predicted === null ? this.buffer.length - this.modem.stride * 6 : Math.max(0, Math.floor(predicted) - timingSearchRadius)
+        const discarded = Math.max(0, Math.min(keepFrom, this.buffer.length - this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 2)))
+        if (discarded > 0) { this.buffer = this.buffer.slice(discarded); this.bufferOriginExact += discarded; this.acquisitionSearchIndex = Math.max(0, this.acquisitionSearchIndex - discarded) }
+        if (predicted !== null && (predicted < -timingSearchRadius || this.buffer.length > predicted + timingSearchRadius + this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 8))) {
+          this.nextFrameOriginExact = null
+          this.pendingCandidate = null
+          this.acquisitionSearchIndex = 0
+          continue
+        }
         break
       }
+      const minimumCandidateSamples = this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 8)
+      if (this.buffer.length <= candidate.index + minimumCandidateSamples) { this.pendingCandidate = candidate; break }
+      const parsed = this.tryDecode(candidate.origin)
+      if (!parsed) {
+        this.pendingCandidate = candidate
+        break
+      }
+      this.pendingCandidate = null
+      if (parsed.incomplete) { this.pendingCandidate = candidate; break }
       if (parsed.frame) {
         frames.push(parsed.frame)
         const frameOriginExact = this.bufferOriginExact + candidate.exactOrigin
@@ -149,15 +167,18 @@ export class PilotMultitoneStreamDecoder {
         this.bufferOriginExact += consumed
         this.nextFrameOriginExact = frameOriginExact + (parsed.frameSymbols + FRAME_GAP_SYMBOLS) * this.modem.timingStride
         this.timingDiagnostics.push({ origin: frameOriginExact, frameSymbols: parsed.frameSymbols, consumed, nextOrigin: this.nextFrameOriginExact, bufferOrigin: this.bufferOriginExact })
+        this.acquisitionSearchIndex = 0
       } else {
         this.buffer = this.buffer.slice(candidate.index + 1)
         this.bufferOriginExact += candidate.index + 1
+        this.nextFrameOriginExact = null
+        this.acquisitionSearchIndex = 0
       }
     }
     return frames
   }
 
-  reset(): void { this.buffer = new Float32Array(0); this.bufferOriginExact = 0; this.nextFrameOriginExact = null; this.channel = null; this.pilotDiagnostics.length = 0; this.timingDiagnostics.length = 0 }
+  reset(): void { this.buffer = new Float32Array(0); this.bufferOriginExact = 0; this.nextFrameOriginExact = null; this.acquisitionSearchIndex = 0; this.pendingCandidate = null; this.channel = null; this.pilotDiagnostics.length = 0; this.timingDiagnostics.length = 0 }
 
   getPilotDiagnostics() { return this.pilotDiagnostics.map(item => ({ ...item })) }
   getTimingDiagnostics() { return this.timingDiagnostics.map(item => ({ ...item })) }
@@ -166,7 +187,7 @@ export class PilotMultitoneStreamDecoder {
     const need = this.modem.timing.symbolStart(0, PREAMBLE_SIGNS.length + 2)
     const predicted = this.nextFrameOriginExact === null ? null : this.nextFrameOriginExact - this.bufferOriginExact
     const timingSearchRadius = Math.ceil(this.modem.timingStride * 4)
-    const first = predicted === null ? 0 : Math.max(0, Math.floor(predicted) - timingSearchRadius)
+    const first = predicted === null ? this.acquisitionSearchIndex : Math.max(0, Math.floor(predicted) - timingSearchRadius)
     const last = predicted === null ? this.buffer.length - need : Math.min(this.buffer.length - need, Math.ceil(predicted) + timingSearchRadius)
     const offsets = predicted === null
       ? Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index)
@@ -183,7 +204,7 @@ export class PilotMultitoneStreamDecoder {
       const origin = offset
       const exactOrigin = predicted === null ? offset : predicted + (offset - Math.round(predicted))
       const firstSymbol = this.symbolOffset(origin, 0)
-      const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0))
+      const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0), origin + firstSymbol)
       if (channel.some(c => !c.usable)) continue
       let valid = true
       for (let i = 0; i < PREAMBLE_SIGNS.length; i++) {
@@ -192,12 +213,13 @@ export class PilotMultitoneStreamDecoder {
       }
       if (valid) return { index: offset, origin, exactOrigin }
     }
+    if (predicted === null && last >= first) this.acquisitionSearchIndex = last + 1
     return null
   }
 
-  private tryDecode(origin: number): { frame: AcousticFrame | null; consumed: number; frameSymbols: number } | null {
+  private tryDecode(origin: number): { frame: AcousticFrame | null; consumed: number; frameSymbols: number; incomplete: boolean } | null {
     const firstSymbol = this.symbolOffset(origin, 0)
-    const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0))
+    const channel = this.modem.estimateChannel(this.buffer, firstSymbol, this.symbolOffset(origin, 1) - firstSymbol, this.activeLength(origin, 0), origin + firstSymbol)
     this.channel = channel
     const bits: number[] = []
     let symbol = PREAMBLE_SIGNS.length
@@ -207,8 +229,8 @@ export class PilotMultitoneStreamDecoder {
       if (dataSymbols === nextPilotAt) {
         const pilotOffset = this.symbolOffset(origin, symbol++)
         const pilot = this.analyzeAt(this.buffer, origin, symbol - 1, channel)
-        if (!pilot) return null
-        const fresh = this.modem.estimatePilotChannel(this.buffer, pilotOffset, this.activeLength(origin, symbol - 1))
+        if (!pilot) return { frame: null, consumed: 0, frameSymbols: symbol, incomplete: true }
+        const fresh = this.modem.estimatePilotChannel(this.buffer, pilotOffset, this.activeLength(origin, symbol - 1), origin + pilotOffset)
         for (let i = 0; i < channel.length; i++) {
           const old = channel[i]!
           const next = fresh[i]!
@@ -220,7 +242,7 @@ export class PilotMultitoneStreamDecoder {
       }
       const currentSymbol = symbol++
       const decision = this.analyzeAt(this.buffer, origin, currentSymbol, channel)
-      if (!decision) return null
+      if (!decision) return { frame: null, consumed: 0, frameSymbols: symbol, incomplete: true }
       bits.push(...decision.decisions); dataSymbols++
       const bytes = bitsToBytes(bits)
       if (bytes.length < 16) continue
@@ -230,18 +252,18 @@ export class PilotMultitoneStreamDecoder {
       const consumed = nativeTiming
         ? this.symbolOffset(origin, symbol + FRAME_GAP_SYMBOLS) - Math.round(origin)
         : this.symbolOffset(origin, symbol - 1) + this.activeLength(origin, symbol - 1) - Math.round(origin)
-      return { frame: decodeFrame(bytes.subarray(0, total)), consumed, frameSymbols: symbol }
+      return { frame: decodeFrame(bytes.subarray(0, total)), consumed, frameSymbols: symbol, incomplete: false }
     }
   }
 
   private symbolOffset(origin: number, symbol: number): number { return Math.round(origin + symbol * this.modem.timingStride) }
   private activeLength(origin: number, symbol: number): number { return this.modem.timing.activeEnd(origin, symbol) - this.symbolOffset(origin, symbol) }
-  private analyzeAt(samples: Float32Array, origin: number, symbol: number, channel: CarrierDiagnostic[]) { return this.modem.analyzeSymbol(samples, this.symbolOffset(origin, symbol), channel, this.activeLength(origin, symbol)) }
+  private analyzeAt(samples: Float32Array, origin: number, symbol: number, channel: CarrierDiagnostic[]) { const offset = this.symbolOffset(origin, symbol); return this.modem.analyzeSymbol(samples, offset, channel, this.activeLength(origin, symbol), origin + offset) }
 }
 
-function correlate(samples: Float32Array, offset: number, count: number, frequency: number, sampleRate: number) {
+function correlate(samples: Float32Array, offset: number, count: number, frequency: number, sampleRate: number, phaseOffset = offset) {
   let re = 0; let im = 0
-  for (let i = 0; i < count; i++) { const phase = 2 * Math.PI * frequency * i / sampleRate; const sample = samples[offset + i]!; re += sample * Math.cos(phase); im -= sample * Math.sin(phase) }
+  for (let i = 0; i < count; i++) { const phase = 2 * Math.PI * frequency * (phaseOffset + i) / sampleRate; const sample = samples[offset + i]!; re += sample * Math.cos(phase); im -= sample * Math.sin(phase) }
   return { re: re * 2 / count, im: im * 2 / count }
 }
 function complexDivide(a: { re: number; im: number }, b: { re: number; im: number }) { const d = b.re * b.re + b.im * b.im || 1e-9; return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d } }

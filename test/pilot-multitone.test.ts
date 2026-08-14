@@ -70,6 +70,45 @@ describe('pilot-assisted constant-power multitone V2', () => {
     const decoder = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(44100)))
     const frames = decoder.pushSamples(resampled)
     expect(frames.map(frame => frame.sequence)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
+    const timing = decoder.getTimingDiagnostics()
+    expect(timing).toHaveLength(20)
+    expect(timing.every((item, index) => index === 0 || item.origin > timing[index - 1]!.origin)).toBe(true)
+  })
+
+  it('decodes a continuous varied multi-frame 44.1 kHz to 48 kHz stream across arbitrary chunks', () => {
+    const txModem = new PilotMultitoneModem(getPilotMultitoneConfig(44100))
+    const parts = Array.from({ length: 20 }, (_, i) => txModem.encode(encodeFrame(0x534f4e49, AcousticFrameType.DATA, i + 1, new Uint8Array((i % 5 + 1) * 7).fill(i))).samples)
+    const joined = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0)); let write = 0
+    for (const part of parts) { joined.set(part, write); write += part.length }
+    const resampled = new Float32Array(Math.round(joined.length * 48000 / 44100))
+    for (let i = 0; i < resampled.length; i++) { const source = i * 44100 / 48000; const left = Math.floor(source); const fraction = source - left; resampled[i] = (joined[left] || 0) * (1 - fraction) + (joined[Math.min(left + 1, joined.length - 1)] || 0) * fraction }
+    const decoder = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(48000)))
+    const frames = []
+    for (let offset = 0; offset < resampled.length; offset += 257) frames.push(...decoder.pushSamples(resampled.subarray(offset, Math.min(offset + 257, resampled.length))))
+    expect(frames.map(frame => frame.sequence)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
+    const timing = decoder.getTimingDiagnostics()
+    expect(timing).toHaveLength(20)
+    expect(timing.every((item, index) => index === 0 || item.origin > timing[index - 1]!.origin)).toBe(true)
+  })
+
+  it('reacquires after a corrupted or missing middle frame in both rate directions', () => {
+    for (const [txRate, rxRate] of [[48000, 44100], [44100, 48000]] as const) {
+      const txModem = new PilotMultitoneModem(getPilotMultitoneConfig(txRate))
+      const parts = Array.from({ length: 3 }, (_, i) => txModem.encode(encodeFrame(0x534f4e49, AcousticFrameType.DATA, i + 1, new Uint8Array(28).fill(i + 1))).samples)
+      const joined = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0)); let write = 0
+      for (const part of parts) { joined.set(part, write); write += part.length }
+      const resampled = new Float32Array(Math.round(joined.length * rxRate / txRate))
+      for (let i = 0; i < resampled.length; i++) { const source = i * txRate / rxRate; const left = Math.floor(source); const fraction = source - left; resampled[i] = (joined[left] || 0) * (1 - fraction) + (joined[Math.min(left + 1, joined.length - 1)] || 0) * fraction }
+      const starts = [0, parts[0]!.length, parts[0]!.length + parts[1]!.length].map(sample => Math.round(sample * rxRate / txRate))
+      const corrupted = resampled.slice()
+      corrupted.fill(0, starts[1]! + 1000, starts[2]!)
+      const corruptedFrames = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(rxRate))).pushSamples(corrupted).map(frame => frame.sequence)
+      expect(corruptedFrames).toEqual([1, 3])
+      const missing = resampled.slice()
+      missing.fill(0, starts[1], starts[2])
+      const missingFrames = new PilotMultitoneStreamDecoder(new PilotMultitoneModem(getPilotMultitoneConfig(rxRate))).pushSamples(missing).map(frame => frame.sequence)
+      expect(missingFrames).toEqual([1, 3])
+    }
   })
 
 })
