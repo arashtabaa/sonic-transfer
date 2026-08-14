@@ -1,7 +1,7 @@
 export interface SyntheticChannelConfig {
   snrDb?: number
   gain?: number
-  frequencyOffsetHz?: number
+  dopplerPpm?: number
   clockDriftPpm?: number
   delaySamples?: number
   echo?: { delaySamples: number; gain: number }
@@ -21,9 +21,7 @@ export interface SyntheticChannelInput {
 export function applySyntheticChannel({ pcm, sampleRate, seed, impairment = {} }: SyntheticChannelInput): Float32Array {
   const gain = impairment.gain ?? 1
   const drift = 1 + (impairment.clockDriftPpm ?? 0) / 1_000_000
-  // A fixed nominal carrier keeps this test-only pitch warp deterministic; the modem's
-  // carrier-bank decoder experiences it as a frequency offset across the band.
-  const frequencyWarp = 1 + (impairment.frequencyOffsetHz ?? 0) / 4000
+  const frequencyWarp = 1 + (impairment.dopplerPpm ?? 0) / 1_000_000
   const delay = Math.max(0, Math.round(impairment.delaySamples ?? 0))
   const outputLength = pcm.length + delay
   const output = new Float32Array(outputLength)

@@ -3,18 +3,23 @@ import { SonicWaveformRenderer } from '../transport/waveform-renderer'
 
 export interface ThroughputBenchmarkResult {
   profile: ModemProfileKey
-  payloadBytes: number
-  encodedBytes: number
+  originalPayloadBytes: number
+  canonicalPayloadBytes: number
+  compressedPayloadBytes: number
   protocolFrames: number
-  fountainBlocks: number
+  sourceFountainBlocks: number
+  transmittedFountainBlocks: number
+  protocolBytes: number
   pcmSamples: number
   durationSeconds: number
-  rawBitrate: number
-  usefulBitrate: number
-  efficiency: number
-  protocolOverheadPercent: number
-  fountainOverheadPercent: number
-  shaVerified: boolean
+  compressionRatio: number
+  protocolExpansionRatio: number
+  fountainRedundancyRatio: number
+  rawPhyBitrate: number
+  sourceUsefulBitrate: number
+  compressedPayloadBitrate: number
+  wireProtocolBitrate: number
+  overallEfficiency: number
 }
 
 export interface ThroughputBenchmarkOptions {
@@ -23,6 +28,23 @@ export interface ThroughputBenchmarkOptions {
   extraBlocks?: number
   filename?: string
   contentType?: string
+}
+
+export type PayloadEntropyClass = 'REPETITIVE' | 'STRUCTURED' | 'INCOMPRESSIBLE' | 'ALREADY_COMPRESSED_LIKE'
+
+/** Deterministic payloads for comparing compression-sensitive benchmark cases. */
+export function createBenchmarkPayload(size: number, kind: PayloadEntropyClass): Uint8Array {
+  const payload = new Uint8Array(size)
+  if (kind === 'REPETITIVE') {
+    payload.fill(0)
+    return payload
+  }
+  let state = kind === 'INCOMPRESSIBLE' ? 0x12345678 : kind === 'ALREADY_COMPRESSED_LIKE' ? 0x9e3779b9 : 0x31415926
+  for (let i = 0; i < size; i++) {
+    state = (Math.imul(1664525, state) + 1013904223) >>> 0
+    payload[i] = kind === 'STRUCTURED' ? ((i * 31 + (state >>> 24)) & 0xff) : state >>> 24
+  }
+  return payload
 }
 
 /** Measures the actual PCM produced by the production renderer, not a symbol-only estimate. */
@@ -45,24 +67,29 @@ export function benchmarkPayload(
   )
   const config = getProfileConfig(profile, sampleRate)
   const rawBitrate = Math.log2(config.carrierCount) * 1000 / (config.symbolDurationMs + config.guardMs)
-  const usefulBitrate = payload.length * 8 / render.durationSec
-  const encodedBytes = render.encodedBytes
-  const protocolBytes = render.protocolBytes
+  const compressedBitrate = render.encodedBytes * 8 / render.durationSec
+  const sourceUsefulBitrate = payload.length * 8 / render.durationSec
+  const wireProtocolBitrate = render.protocolBytes * 8 / render.durationSec
   const fountainBlocks = render.fountainBlocks
   return {
     profile,
-    payloadBytes: payload.length,
-    encodedBytes,
+    originalPayloadBytes: payload.length,
+    canonicalPayloadBytes: render.canonicalBytes,
+    compressedPayloadBytes: render.encodedBytes,
     protocolFrames: render.totalFrames,
-    fountainBlocks,
+    sourceFountainBlocks: render.sourceBlocks,
+    transmittedFountainBlocks: fountainBlocks,
+    protocolBytes: render.protocolBytes,
     pcmSamples: render.totalSamples,
     durationSeconds: render.totalSamples / sampleRate,
-    rawBitrate,
-    usefulBitrate,
-    efficiency: usefulBitrate / rawBitrate * 100,
-    protocolOverheadPercent: encodedBytes ? (protocolBytes - encodedBytes) / protocolBytes * 100 : 0,
-    fountainOverheadPercent: fountainBlocks ? (fountainBlocks - render.sourceBlocks) / fountainBlocks * 100 : 0,
-    shaVerified: false,
+    compressionRatio: render.canonicalBytes ? render.encodedBytes / render.canonicalBytes : 0,
+    protocolExpansionRatio: render.encodedBytes ? render.protocolBytes / render.encodedBytes : 0,
+    fountainRedundancyRatio: render.sourceBlocks ? (fountainBlocks - render.sourceBlocks) / render.sourceBlocks : 0,
+    rawPhyBitrate: rawBitrate,
+    sourceUsefulBitrate,
+    compressedPayloadBitrate: compressedBitrate,
+    wireProtocolBitrate,
+    overallEfficiency: sourceUsefulBitrate / rawBitrate * 100,
   }
 }
 

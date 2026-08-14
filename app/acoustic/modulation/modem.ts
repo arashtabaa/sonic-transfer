@@ -166,3 +166,8 @@ export function validateConfig(config: ModemConfig): { valid: boolean; error?: s
   }
   return { valid: true }
 }
+
+/** Applies true carrier-bank detuning for receiver/transmitter mismatch tests. */
+export function withCarrierDetuning(config: ModemConfig, offsetHz: number): ModemConfig {
+  return { ...config, startFreq: config.startFreq + offsetHz, endFreq: config.endFreq + offsetHz }
+}

@@ -12,6 +12,7 @@ export interface RenderedWaveformResult {
   totalSamples: number
   modemProfile: ModemProfileKey
   encodedBytes: number
+  canonicalBytes: number
   protocolBytes: number
   sourceBlocks: number
   fountainBlocks: number
@@ -93,6 +94,7 @@ export class SonicWaveformRenderer {
       totalSamples,
       modemProfile: profileKey,
       encodedBytes: encoder.compressed.length,
+      canonicalBytes: canonicalPayload.length,
       protocolBytes,
       sourceBlocks: encoder.k,
       fountainBlocks: encoder.k + extraBlocks,
